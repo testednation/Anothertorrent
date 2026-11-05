@@ -1,0 +1,6 @@
+{
+  "name": "Kestrel Torrent Index & Web Client",
+  "description": "Multi-site torrent meta-search engine with customizable indexers, integrated in-browser WebTorrent streaming client, and native device client handoff.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
