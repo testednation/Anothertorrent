@@ -25,6 +25,11 @@ import {
   Link2Off,
   Edit3,
   AlertTriangle,
+  FileDown,
+  Clock,
+  Activity,
+  Terminal,
+  FolderPlus,
 } from 'lucide-react';
 import {
   CURATED_SWARM_TORRENTS,
@@ -45,6 +50,7 @@ import {
 } from './types/torrent';
 import {
   announceToWssTracker,
+  exportBatchTorrentMetadata,
   exportTorrentManifestFile,
   triggerDeviceClientDownload,
 } from './services/torrentEngine';
@@ -53,6 +59,9 @@ import { IndexerManagerView } from './components/IndexerManagerView';
 import { ClientSettingsView } from './components/ClientSettingsView';
 import { AddMagnetModal } from './components/AddMagnetModal';
 import { BatchRenameControl } from './components/BatchRenameControl';
+import { TorkDoctorModal } from './components/TorkDoctorModal';
+import { SourceCatalogModal } from './components/SourceCatalogModal';
+import { LinuxDistroHubModal } from './components/LinuxDistroHubModal';
 import {
   FileExtensionIcon,
   applyBatchRenameToFiles,
@@ -234,6 +243,31 @@ export default function App() {
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('kestrel_recent_searches_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed
+            .filter((q) => typeof q === 'string' && q.trim().length > 0)
+            .slice(0, 5);
+        }
+      }
+    } catch {
+      // ignore storage error
+    }
+    return ['Ubuntu 24.04', 'Big Buck Bunny', 'Debian 12', 'Sintel', 'Blender'];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('kestrel_recent_searches_v1', JSON.stringify(recentSearches));
+    } catch {
+      // ignore
+    }
+  }, [recentSearches]);
+
   const [selectedCategory, setSelectedCategory] = useState<TorrentCategory>('All');
   const [selectedSiteFilter, setSelectedSiteFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<SortField>('seeders');
@@ -337,6 +371,9 @@ export default function App() {
   const [isAddMagnetOpen, setIsAddMagnetOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+  const [isTorkDoctorOpen, setIsTorkDoctorOpen] = useState(false);
+  const [isSourceCatalogOpen, setIsSourceCatalogOpen] = useState(false);
+  const [isLinuxDistroHubOpen, setIsLinuxDistroHubOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -733,8 +770,43 @@ export default function App() {
     executeMultiSiteSearch('');
   }, []);
 
+  const addRecentSearch = (query: string) => {
+    const clean = query.trim();
+    if (!clean) return;
+    setRecentSearches((prev) => {
+      const filtered = prev.filter((item) => item.toLowerCase() !== clean.toLowerCase());
+      return [clean, ...filtered].slice(0, 5);
+    });
+  };
+
+  const handleSelectRecentSearch = (query: string) => {
+    setSearchQuery(query);
+    setSubmittedQuery(query);
+    addRecentSearch(query);
+    executeMultiSiteSearch(query);
+    notify(`Searching for "${query}"`);
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+  };
+
+  const handleRemoveRecentSearch = (queryToRemove: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRecentSearches((prev) =>
+      prev.filter((q) => q.toLowerCase() !== queryToRemove.toLowerCase())
+    );
+  };
+
+  const handleClearRecentSearches = () => {
+    setRecentSearches([]);
+    notify('Cleared recent search history');
+  };
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (searchQuery.trim()) {
+      addRecentSearch(searchQuery);
+    }
     executeMultiSiteSearch(searchQuery);
   };
 
@@ -832,6 +904,12 @@ export default function App() {
         e.preventDefault();
         setDefaultMode('device-client');
         notify('Primary client set to Device Client (D)');
+      } else if (key === 'a') {
+        e.preventDefault();
+        setIsSourceCatalogOpen((prev) => !prev);
+      } else if (key === 'l') {
+        e.preventDefault();
+        setIsLinuxDistroHubOpen((prev) => !prev);
       } else if (e.key === '?') {
         e.preventDefault();
         setIsShortcutsOpen((prev) => !prev);
@@ -844,6 +922,8 @@ export default function App() {
     isShortcutsOpen,
     isAddMagnetOpen,
     isBulkDeleteModalOpen,
+    isSourceCatalogOpen,
+    isLinuxDistroHubOpen,
     showQuickAddSite,
     searchQuery,
     submittedQuery,
@@ -1489,6 +1569,16 @@ export default function App() {
     );
   };
 
+  const handleExportSelectedMetadata = () => {
+    if (selectedTorrentItems.length === 0) return;
+    exportBatchTorrentMetadata(selectedTorrentItems);
+    notify(
+      `Exported JSON metadata backup for ${selectedTorrentItems.length} ${
+        selectedTorrentItems.length === 1 ? 'torrent' : 'torrents'
+      }`
+    );
+  };
+
   const handleQuickAddSiteSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = quickSiteName.trim();
@@ -1605,10 +1695,19 @@ export default function App() {
         </nav>
 
         {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsTorkDoctorOpen(true)}
+            title="Run Tork Doctor latency & canary health diagnostics"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[40px] cursor-pointer"
+          >
+            <Activity className="w-3.5 h-3.5 animate-pulse" />
+            <span>Tork Doctor</span>
+          </button>
           <button
             onClick={() => setIsAddMagnetOpen(true)}
-            className="px-4 py-2 text-xs font-semibold text-slate-950 bg-sky-400 rounded-lg hover:bg-sky-300 transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+            className="px-4 py-2 text-xs font-semibold text-slate-950 bg-sky-400 rounded-lg hover:bg-sky-300 transition-colors whitespace-nowrap shrink-0 min-h-[40px] cursor-pointer"
           >
             + Add Magnet
           </button>
@@ -1728,24 +1827,94 @@ export default function App() {
                 </button>
               </form>
 
+              {/* Recent Searches Tags Strip */}
+              {recentSearches.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-slate-400 font-medium flex items-center gap-1.5 text-[11px] uppercase tracking-wider shrink-0 select-none">
+                    <Clock className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Recent Searches:</span>
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {recentSearches.map((query) => {
+                      const isActive =
+                        searchQuery.trim().toLowerCase() === query.trim().toLowerCase();
+                      return (
+                        <div
+                          key={query}
+                          onClick={() => handleSelectRecentSearch(query)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleSelectRecentSearch(query);
+                            }
+                          }}
+                          title={`Click to search for "${query}"`}
+                          className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-all cursor-pointer select-none ${
+                            isActive
+                              ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-xs font-semibold'
+                              : 'bg-slate-900/90 text-slate-300 border border-slate-700/80 hover:bg-slate-800 hover:text-white hover:border-slate-600 font-medium'
+                          }`}
+                        >
+                          <Search className="w-3 h-3 text-slate-500 group-hover:text-sky-400 transition-colors shrink-0" />
+                          <span>{query}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => handleRemoveRecentSearch(query, e)}
+                            title={`Remove "${query}" from recent searches`}
+                            className="p-0.5 ml-0.5 rounded-full text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition-colors cursor-pointer"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleClearRecentSearches}
+                    className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors ml-1 underline-offset-2 hover:underline cursor-pointer"
+                    title="Clear recent searches history"
+                  >
+                    Clear history
+                  </button>
+                </div>
+              )}
+
               {/* Filter & Indexer Source Strip */}
               <div className="mt-5 pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-4">
-                {/* Category Segmented Filter */}
-                <div className="flex items-center gap-1 p-1 bg-slate-900/90 rounded-lg border border-slate-800/80 overflow-x-auto">
-                  {CATEGORIES.map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => setSelectedCategory(cat)}
-                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                        selectedCategory === cat
-                          ? 'bg-slate-800 text-slate-100 shadow-xs'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {cat}
-                    </button>
-                  ))}
+                {/* Category Segmented Filter + Linux Distro Quick Hub */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
+                  <div className="flex items-center gap-1 p-1 bg-slate-900/90 rounded-lg border border-slate-800/80 shrink-0">
+                    {CATEGORIES.map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setSelectedCategory(cat)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                          selectedCategory === cat
+                            ? 'bg-slate-800 text-slate-100 shadow-xs'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsLinuxDistroHubOpen(true)}
+                    className="px-3 py-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer shadow-xs"
+                    title="Open Verified Linux & FOSS Distro Hub with SHA-256 hashes (Key: L)"
+                  >
+                    <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Linux Distros</span>
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+                      8 ISOs
+                    </span>
+                  </button>
                 </div>
 
                 {/* Site Filter + Sort + Quick Add Site */}
@@ -1787,6 +1956,19 @@ export default function App() {
                       </option>
                     </select>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsSourceCatalogOpen(true)}
+                    className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-900 border border-slate-800 hover:bg-slate-800 hover:text-white rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Browse 1-click community indexer source catalog (Key: a)"
+                  >
+                    <FolderPlus className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Catalog</span>
+                    <kbd className="text-[10px] font-mono px-1 py-0.2 bg-slate-950 border border-slate-700 rounded text-slate-400">
+                      a
+                    </kbd>
+                  </button>
 
                   <button
                     type="button"
@@ -2037,6 +2219,16 @@ export default function App() {
                       >
                         <Link2Off className="w-3.5 h-3.5 text-amber-400" />
                         Take off Protocol (Copy Hashes)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleExportSelectedMetadata}
+                        title="Generate and download a JSON file containing all metadata for selected torrents for backup or sharing"
+                        className="px-3 py-1.5 text-xs font-medium bg-slate-800 text-slate-200 border border-slate-700 rounded-lg hover:bg-slate-700 hover:text-white transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer shadow-xs active:scale-95"
+                      >
+                        <FileDown className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Export Selected ({selectedTorrentItems.length})</span>
                       </button>
 
                       <button
@@ -3288,6 +3480,8 @@ export default function App() {
                 notify('Restored default torrent indexers');
               }}
               onNotify={notify}
+              onOpenSourceCatalog={() => setIsSourceCatalogOpen(true)}
+              onOpenTorkDoctor={() => setIsTorkDoctorOpen(true)}
             />
           </div>
         )}
@@ -3467,6 +3661,8 @@ export default function App() {
                 { keys: ['Esc'], label: 'Clear current search query or close modal' },
                 { keys: ['T'], label: 'Switch to Transfers & WebStream tab' },
                 { keys: ['I'], label: 'Switch to Search Sites (Indexers) tab' },
+                { keys: ['A'], label: 'Open 1-Click Indexer Source Catalog' },
+                { keys: ['L'], label: 'Open Verified Linux & FOSS Distro Hub' },
                 { keys: ['C'], label: 'Switch to Client Settings tab' },
                 { keys: ['M'], label: 'Open + Add Magnet / InfoHash dialog' },
                 { keys: ['W'], label: 'Set primary engine to In-Browser WebTorrent' },
@@ -3581,27 +3777,72 @@ export default function App() {
             </div>
 
             {/* Modal Footer Actions */}
-            <div className="p-4 bg-slate-900/60 border-t border-slate-800 flex items-center justify-end gap-2.5">
+            <div className="p-4 bg-slate-900/60 border-t border-slate-800 flex items-center justify-between gap-2.5">
               <button
                 type="button"
-                onClick={() => setIsBulkDeleteModalOpen(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                onClick={handleExportSelectedMetadata}
+                className="px-3 py-1.5 text-xs font-medium text-slate-300 hover:text-white bg-slate-800 border border-slate-700 hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Download JSON metadata backup before removing from index"
               >
-                Cancel
+                <FileDown className="w-3.5 h-3.5 text-sky-400" />
+                <span>Export JSON Backup</span>
               </button>
-              <button
-                type="button"
-                onClick={handleBatchDeleteSelected}
-                className="px-4 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-lg shadow-rose-950/40"
-                autoFocus
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Remove {selectedTorrentItems.length} {selectedTorrentItems.length === 1 ? 'Torrent' : 'Torrents'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkDeleteModalOpen(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchDeleteSelected}
+                  className="px-4 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-lg shadow-rose-950/40"
+                  autoFocus
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Remove {selectedTorrentItems.length} {selectedTorrentItems.length === 1 ? 'Torrent' : 'Torrents'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Tork Doctor Diagnostics Modal */}
+      <TorkDoctorModal
+        isOpen={isTorkDoctorOpen}
+        onClose={() => setIsTorkDoctorOpen(false)}
+        sites={sites}
+        onNotify={notify}
+      />
+
+      {/* 1-Click Source Catalog Modal */}
+      <SourceCatalogModal
+        isOpen={isSourceCatalogOpen}
+        onClose={() => setIsSourceCatalogOpen(false)}
+        sites={sites}
+        onAddSite={(newSite) => {
+          const next = [...sites, newSite];
+          setSites(next);
+          executeMultiSiteSearch(searchQuery, next);
+        }}
+        onToggleSite={(siteId) => {
+          setSites((prev) =>
+            prev.map((s) => (s.id === siteId ? { ...s, enabled: !s.enabled } : s))
+          );
+        }}
+        onNotify={notify}
+      />
+
+      {/* Verified Linux / FOSS Distro Quick-Picker Hub */}
+      <LinuxDistroHubModal
+        isOpen={isLinuxDistroHubOpen}
+        onClose={() => setIsLinuxDistroHubOpen(false)}
+        onStartDownload={handleStartTransfer}
+        onNotify={notify}
+      />
 
       {/* Notification Toast */}
       {toastMessage && (

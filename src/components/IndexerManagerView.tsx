@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Plus,
   Globe,
@@ -7,6 +7,8 @@ import {
   Check,
   ExternalLink,
   Sliders,
+  Activity,
+  FolderPlus,
 } from 'lucide-react';
 import {
   IndexerProtocol,
@@ -27,6 +29,8 @@ interface IndexerManagerViewProps {
   ) => void;
   onResetDefaults: () => void;
   onNotify: (msg: string) => void;
+  onOpenSourceCatalog?: () => void;
+  onOpenTorkDoctor?: () => void;
 }
 
 const ALL_CATEGORIES: Exclude<TorrentCategory, 'All'>[] = [
@@ -47,6 +51,8 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
   onUpdateSiteStatus,
   onResetDefaults,
   onNotify,
+  onOpenSourceCatalog,
+  onOpenTorkDoctor,
 }) => {
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -59,6 +65,21 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
   const [probingSiteId, setProbingSiteId] = useState<string | null>(null);
   const [isTestingDraft, setIsTestingDraft] = useState(false);
   const [draftProbeResult, setDraftProbeResult] = useState<string | null>(null);
+
+  // Keyboard shortcut: 'a' to open community source catalog
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
+        return;
+      }
+      if (e.key.toLowerCase() === 'a' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        onOpenSourceCatalog?.();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onOpenSourceCatalog]);
 
   const toggleCategorySelection = (cat: Exclude<TorrentCategory, 'All'>) => {
     setSelectedCategories((prev) =>
@@ -385,7 +406,7 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
 
       {/* Right Column: Configured Sites Table */}
       <div className="lg:col-span-7 border border-slate-800 bg-[#111827] rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4">
+        <div className="px-6 py-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 className="text-base font-semibold text-slate-100">
               Configured Search Indexers ({sites.filter((s) => s.enabled).length} of {sites.length} active)
@@ -394,12 +415,39 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
               Queries are dispatched in parallel across all enabled sites during every search.
             </p>
           </div>
-          <button
-            onClick={onResetDefaults}
-            className="px-3 py-1.5 text-xs font-medium text-slate-300 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors whitespace-nowrap shrink-0"
-          >
-            Reset Defaults
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onOpenTorkDoctor && (
+              <button
+                type="button"
+                onClick={onOpenTorkDoctor}
+                title="Run Tork Doctor latency and canary probe suite"
+                className="px-3 py-1.5 text-xs font-semibold text-sky-400 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>Tork Doctor</span>
+              </button>
+            )}
+            {onOpenSourceCatalog && (
+              <button
+                type="button"
+                onClick={onOpenSourceCatalog}
+                title="Browse community indexer source catalog (Key: a)"
+                className="px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-700 hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-sky-400" />
+                <span>Catalog</span>
+                <kbd className="text-[10px] font-mono px-1 py-0.2 bg-slate-900 border border-slate-700 rounded text-slate-400">
+                  a
+                </kbd>
+              </button>
+            )}
+            <button
+              onClick={onResetDefaults}
+              className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+            >
+              Reset Defaults
+            </button>
+          </div>
         </div>
 
         <div className="divide-y divide-slate-800/80">

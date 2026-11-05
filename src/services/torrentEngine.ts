@@ -455,6 +455,69 @@ export function exportTorrentManifestFile(torrent: TorrentItem): void {
 }
 
 /**
+ * Generates and downloads a formatted JSON backup file containing all metadata for a batch of torrents
+ */
+export function exportBatchTorrentMetadata(torrents: TorrentItem[]): void {
+  if (torrents.length === 0) return;
+
+  const totalBytes = torrents.reduce((acc, t) => acc + (t.sizeBytes || 0), 0);
+  const totalFiles = torrents.reduce((acc, t) => acc + (t.files?.length || 0), 0);
+
+  const payload = {
+    exportVersion: '1.0',
+    generator: 'Kestrel WebTorrent Workspace',
+    exportedAt: new Date().toISOString(),
+    summary: {
+      count: torrents.length,
+      totalBytes,
+      totalBytesFormatted: formatBytes(totalBytes),
+      totalFiles,
+      categories: Array.from(new Set(torrents.map((t) => t.category))),
+      sources: Array.from(new Set(torrents.map((t) => t.sourceName))),
+    },
+    torrents: torrents.map((t) => ({
+      id: t.id,
+      title: t.title,
+      infoHash: t.infoHash,
+      magnetUri: t.magnetUri,
+      sizeBytes: t.sizeBytes,
+      sizeFormatted: t.sizeFormatted,
+      seeders: t.seeders,
+      leechers: t.leechers,
+      category: t.category,
+      sourceId: t.sourceId,
+      sourceName: t.sourceName,
+      uploadDate: t.uploadDate,
+      verified: t.verified,
+      resolution: t.resolution || null,
+      codec: t.codec || null,
+      webSeedUrls: t.webSeedUrls || [],
+      filesCount: t.files?.length || 0,
+      files: (t.files || []).map((f) => ({
+        name: f.name,
+        path: f.path,
+        sizeBytes: f.sizeBytes,
+        type: f.type,
+        streamUrl: f.streamUrl || null,
+      })),
+      pageUrl: t.pageUrl || null,
+    })),
+  };
+
+  const jsonString = JSON.stringify(payload, null, 2);
+  const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const dateStamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.download = `kestrel-torrents-export-${torrents.length}-items-${dateStamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
  * Saves an in-browser WebTorrent file payload to the user's local filesystem
  */
 export function savePayloadFileToDisk(file: TorrentFileEntry, torrent: TorrentItem): void {
