@@ -41,6 +41,7 @@ interface SourceCatalogModalProps {
 type CatalogCategoryFilter =
   | 'All'
   | 'Media'
+  | 'P2P Networks'
   | 'Anime'
   | 'Games'
   | 'Software'
@@ -89,6 +90,18 @@ export const SourceCatalogModal: React.FC<SourceCatalogModalProps> = ({
         if (
           categoryFilter === 'Media' &&
           !item.categories.some((c) => c === 'Movies' || c === 'TV')
+        ) {
+          return false;
+        }
+        if (
+          categoryFilter === 'P2P Networks' &&
+          !item.protocol.includes('gnutella') &&
+          !item.protocol.includes('edonkey') &&
+          !item.protocol.includes('frostwire') &&
+          !item.name.toLowerCase().includes('gnutella') &&
+          !item.name.toLowerCase().includes('edonkey') &&
+          !item.name.toLowerCase().includes('emule') &&
+          !item.name.toLowerCase().includes('frostwire')
         ) {
           return false;
         }
@@ -377,6 +390,7 @@ export const SourceCatalogModal: React.FC<SourceCatalogModalProps> = ({
               [
                 'All',
                 'Media',
+                'P2P Networks',
                 'Anime',
                 'Games',
                 'Software',

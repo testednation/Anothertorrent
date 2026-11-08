@@ -14,6 +14,8 @@ import {
   ChevronDown,
   ChevronUp,
   ShieldCheck,
+  Shield,
+  Lock,
   Sparkles,
   ExternalLink,
 } from 'lucide-react';
@@ -36,6 +38,9 @@ interface ClientSettingsViewProps {
   onUpdateDeviceConfig: (config: DeviceClientConfig) => void;
   accentTheme: AccentThemeId;
   onChangeAccentTheme: (theme: AccentThemeId) => void;
+  trackSearchHistory: boolean;
+  onToggleTrackSearchHistory: (enabled: boolean) => void;
+  onClearAllSearchHistory: () => void;
   onNotify: (msg: string) => void;
 }
 
@@ -64,6 +69,9 @@ export const ClientSettingsView: React.FC<ClientSettingsViewProps> = ({
   onUpdateDeviceConfig,
   accentTheme,
   onChangeAccentTheme,
+  trackSearchHistory,
+  onToggleTrackSearchHistory,
+  onClearAllSearchHistory,
   onNotify,
 }) => {
   const [newTracker, setNewTracker] = useState('');
@@ -286,6 +294,97 @@ export const ClientSettingsView: React.FC<ClientSettingsViewProps> = ({
               1080p · x265
             </span>
           </div>
+        </div>
+      </div>
+
+      {/* Search Privacy & History Tracking Section */}
+      <div className="border border-slate-800 bg-[#111827] rounded-xl p-6 space-y-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div
+              className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                trackSearchHistory
+                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-400'
+                  : 'bg-amber-500/15 border border-amber-500/30 text-amber-400'
+              }`}
+            >
+              {trackSearchHistory ? (
+                <ShieldCheck className="w-4 h-4" />
+              ) : (
+                <Shield className="w-4 h-4" />
+              )}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-slate-100">
+                  Search Privacy & History Tracking
+                </h2>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${
+                    trackSearchHistory
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                  }`}
+                >
+                  {trackSearchHistory ? 'Tracking Active' : 'History Paused'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
+                Control whether Kestrel saves your search queries in local storage. When disabled, your queries are executed in real time across indexers without storing logs, recent search pills, or query frequency statistics.
+              </p>
+            </div>
+          </div>
+
+          {/* Toggle Switch Button */}
+          <div className="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={trackSearchHistory}
+              onClick={() => {
+                const next = !trackSearchHistory;
+                onToggleTrackSearchHistory(next);
+                onNotify(
+                  next
+                    ? 'Search history tracking enabled'
+                    : 'Search history tracking disabled (privacy mode active)'
+                );
+              }}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 focus:ring-offset-slate-950 ${
+                trackSearchHistory ? 'bg-sky-500' : 'bg-slate-700'
+              }`}
+            >
+              <span className="sr-only">Toggle search history tracking</span>
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                  trackSearchHistory ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+            <span className="text-xs font-semibold text-slate-200 select-none min-w-[56px]">
+              {trackSearchHistory ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+        </div>
+
+        {/* Privacy Note & Purge Button */}
+        <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-slate-400">
+            <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <span>
+              Queries stay 100% in local browser storage (<code className="text-slate-300 font-mono">kestrel_recent_searches_v1</code>). No telemetry is sent.
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClearAllSearchHistory}
+            className="px-3 py-1.5 text-xs font-medium text-rose-300 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer shrink-0"
+            title="Clear all stored recent search terms and query frequency records from browser storage"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            <span>Purge Stored History</span>
+          </button>
         </div>
       </div>
 

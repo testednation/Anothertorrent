@@ -186,3 +186,71 @@ export function generateInitialSwarmHistory(
 
   return samples;
 }
+
+export function generate24HourTorrentSwarmHistory(
+  seedKey: string,
+  currentSeeders: number,
+  currentLeechers: number
+): SwarmHealthSample[] {
+  const samples: SwarmHealthSample[] = [];
+  const now = Date.now();
+  const hourMs = 3600 * 1000;
+
+  let hash = 0;
+  for (let i = 0; i < seedKey.length; i++) {
+    hash = (hash * 31 + seedKey.charCodeAt(i)) | 0;
+  }
+  const phase = (Math.abs(hash) % 100) / 100;
+  const drift = ((Math.abs(hash >> 4) % 21) - 10) / 100; // -0.10 to +0.10
+
+  const baseSeeds = Math.max(1, currentSeeders);
+  const basePeers = Math.max(1, currentLeechers);
+
+  for (let h = 23; h >= 0; h--) {
+    const ts = new Date(now - h * hourMs);
+    const hourStr = ts.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const label = h === 0 ? 'Now' : `-${h}h (${hourStr})`;
+
+    if (h === 0) {
+      const finalRatio = calculateSwarmRatio(baseSeeds, basePeers);
+      samples.push({
+        time: label,
+        seeds: baseSeeds,
+        peers: basePeers,
+        ratio: finalRatio,
+        viability: getSwarmViability(finalRatio, baseSeeds),
+      });
+      continue;
+    }
+
+    const progress = (24 - h) / 24;
+    const diurnalWave = Math.sin((progress + phase) * Math.PI * 2) * 0.18;
+    const secondaryWave = Math.cos((progress * 3 + phase) * Math.PI) * 0.08;
+    const trendFactor = 1 + drift * (1 - progress);
+
+    const sampleSeeds = Math.max(
+      1,
+      Math.round(baseSeeds * trendFactor * (1 + diurnalWave * 0.7 + secondaryWave * 0.4))
+    );
+    const samplePeers = Math.max(
+      1,
+      Math.round(basePeers * (1 - diurnalWave * 0.5 + secondaryWave * 0.6))
+    );
+    const sampleRatio = calculateSwarmRatio(sampleSeeds, samplePeers);
+
+    samples.push({
+      time: label,
+      seeds: sampleSeeds,
+      peers: samplePeers,
+      ratio: sampleRatio,
+      viability: getSwarmViability(sampleRatio, sampleSeeds),
+    });
+  }
+
+  return samples;
+}
+

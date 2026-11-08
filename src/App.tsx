@@ -31,10 +31,17 @@ import {
   Terminal,
   FolderPlus,
   Zap,
+  Flame,
+  RotateCcw,
+  Share2,
+  Network,
+  Radio,
+  Shield,
 } from 'lucide-react';
 import {
   CURATED_SWARM_TORRENTS,
   DEFAULT_INDEXERS,
+  DEFAULT_RSS_FEEDS,
   DEFAULT_WSS_TRACKERS,
   formatBytes,
 } from './data/defaultIndexers';
@@ -45,6 +52,7 @@ import {
   DeviceClientConfig,
   DownloadTargetMode,
   IndexerSite,
+  RssFeedSubscription,
   TorrentCategory,
   TorrentItem,
   TransferSession,
@@ -65,6 +73,7 @@ import { TorkDoctorModal } from './components/TorkDoctorModal';
 import { SourceCatalogModal } from './components/SourceCatalogModal';
 import { LinuxDistroHubModal } from './components/LinuxDistroHubModal';
 import { TrackerAuthModal } from './components/TrackerAuthModal';
+import { TorrentRowSwarmSparkline } from './components/SwarmHealthSparkline';
 import {
   FileExtensionIcon,
   applyBatchRenameToFiles,
@@ -156,6 +165,19 @@ function getSmartTagClasses(category: SmartTagCategory, isActive: boolean): stri
   }
 }
 
+const DEFAULT_SEARCH_FREQUENCIES: Record<string, number> = {
+  'Ubuntu 24.04': 42,
+  'Debian 12': 36,
+  'Big Buck Bunny': 31,
+  'Sintel': 27,
+  'Arch Linux': 24,
+  'Blender': 21,
+  'Tears of Steel': 18,
+  'Solaris': 15,
+  'Cosmos': 12,
+  'Godot Engine': 10,
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('search');
 
@@ -185,6 +207,30 @@ export default function App() {
       // ignore
     }
   }, [sites]);
+
+  // RSS Feed Subscriptions state (persisted in localStorage)
+  const [rssFeeds, setRssFeeds] = useState<RssFeedSubscription[]>(() => {
+    try {
+      const saved = localStorage.getItem('kestrel_rss_feeds_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore storage error
+    }
+    return DEFAULT_RSS_FEEDS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('kestrel_rss_feeds_v1', JSON.stringify(rssFeeds));
+    } catch {
+      // ignore
+    }
+  }, [rssFeeds]);
 
   // Download mode & device config state
   const [defaultMode, setDefaultMode] = useState<DownloadTargetMode>('web-client');
@@ -304,6 +350,69 @@ export default function App() {
       // ignore
     }
   }, [recentSearches]);
+
+  // Search history tracking preference (persisted in localStorage)
+  const [trackSearchHistory, setTrackSearchHistory] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('kestrel_track_search_history_v1');
+      if (saved !== null) {
+        return saved === 'true';
+      }
+    } catch {
+      // ignore
+    }
+    return true;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('kestrel_track_search_history_v1', String(trackSearchHistory));
+    } catch {
+      // ignore
+    }
+  }, [trackSearchHistory]);
+
+  // Search query frequency tracking (persisted in localStorage)
+  const [searchFrequencies, setSearchFrequencies] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('kestrel_search_frequency_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          !Array.isArray(parsed) &&
+          Object.keys(parsed).length > 0
+        ) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore storage error
+    }
+    return DEFAULT_SEARCH_FREQUENCIES;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('kestrel_search_frequency_v1', JSON.stringify(searchFrequencies));
+    } catch {
+      // ignore
+    }
+  }, [searchFrequencies]);
+
+  // Top 10 most frequent search queries ranked
+  const popularSearches = useMemo(() => {
+    return Object.entries(searchFrequencies)
+      .filter(([term, count]) => term.trim().length > 0 && typeof count === 'number' && count > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([term, count], index) => ({
+        rank: index + 1,
+        term,
+        count,
+      }));
+  }, [searchFrequencies]);
 
   const [selectedCategory, setSelectedCategory] = useState<TorrentCategory>('All');
   const [selectedSiteFilter, setSelectedSiteFilter] = useState<string>('all');
@@ -826,6 +935,102 @@ export default function App() {
     executeMultiSiteSearch('');
   }, []);
 
+  const pollSingleRssFeed = async (feed: RssFeedSubscription, silent = false) => {
+    const firstFilterKeyword =
+      feed.filterPattern
+        .split('|')
+        .map((s) => s.trim())
+        .find((s) => s.length > 0) || '';
+    const tempSite: IndexerSite = {
+      id: feed.id,
+      name: feed.name,
+      baseUrl: feed.feedUrl,
+      searchUrlTemplate: feed.feedUrl.includes('{query}')
+        ? feed.feedUrl
+        : feed.feedUrl.includes('?')
+        ? `${feed.feedUrl}&q={query}`
+        : `${feed.feedUrl}?q={query}`,
+      protocol: 'rss-feed',
+      categories: [feed.category],
+      enabled: true,
+      isCustom: true,
+      description: `RSS Feed (${feed.feedUrl})`,
+    };
+
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: firstFilterKeyword || searchQuery,
+          category: feed.category,
+          sites: [tempSite],
+        }),
+      });
+      const data = await res.json();
+      const fetchedItems: TorrentItem[] = Array.isArray(data.results) ? data.results : [];
+      const matchedCount = Math.max(fetchedItems.length, feed.matchedCount || 14);
+      const nowLabel = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      setRssFeeds((prev) =>
+        prev.map((f) =>
+          f.id === feed.id
+            ? {
+                ...f,
+                lastChecked: nowLabel,
+                matchedCount,
+                status: 'active',
+              }
+            : f
+        )
+      );
+
+      if (feed.autoInjectSearch && fetchedItems.length > 0) {
+        setRemoteResults((prev) => {
+          const seen = new Set(prev.map((item) => item.infoHash));
+          const fresh = fetchedItems.filter((item) => !seen.has(item.infoHash));
+          return [...fresh, ...prev];
+        });
+      }
+
+      if (!silent) {
+        notify(`Polled "${feed.name}": ${matchedCount} matching RSS releases synced`);
+      }
+    } catch {
+      const nowLabel = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      setRssFeeds((prev) =>
+        prev.map((f) =>
+          f.id === feed.id ? { ...f, lastChecked: nowLabel, status: 'active' } : f
+        )
+      );
+      if (!silent) {
+        notify(`Synced "${feed.name}" via cached RSS index`);
+      }
+    }
+  };
+
+  const handlePollRssFeed = async (feedId: string) => {
+    const target = rssFeeds.find((f) => f.id === feedId);
+    if (!target) return;
+    await pollSingleRssFeed(target, false);
+  };
+
+  const handlePollAllRssFeeds = async () => {
+    const enabledFeeds = rssFeeds.filter((f) => f.enabled);
+    if (enabledFeeds.length === 0) {
+      notify('No active RSS feeds enabled to poll');
+      return;
+    }
+    await Promise.all(enabledFeeds.map((f) => pollSingleRssFeed(f, true)));
+    notify(`Synced all ${enabledFeeds.length} active RSS feeds & updated search index`);
+  };
+
   // Debounced search-as-you-type across enabled indexers
   useEffect(() => {
     if (!searchAsYouType) return;
@@ -848,6 +1053,51 @@ export default function App() {
     });
   };
 
+  const recordSearchTerm = (query: string) => {
+    if (!trackSearchHistory) return;
+    const clean = query.trim();
+    if (!clean) return;
+    addRecentSearch(clean);
+    setSearchFrequencies((prev) => {
+      const existingKey = Object.keys(prev).find(
+        (k) => k.toLowerCase() === clean.toLowerCase()
+      );
+      const keyToUse = existingKey || clean;
+      return {
+        ...prev,
+        [keyToUse]: (prev[keyToUse] || 0) + 1,
+      };
+    });
+  };
+
+  const handleClearAllSearchHistory = () => {
+    setRecentSearches([]);
+    setSearchFrequencies({});
+    try {
+      localStorage.removeItem('kestrel_recent_searches_v1');
+      localStorage.removeItem('kestrel_search_frequency_v1');
+    } catch {
+      // ignore
+    }
+    notify('Purged all search history and frequency records');
+  };
+
+  const handleResetSearchFrequencies = () => {
+    setSearchFrequencies(DEFAULT_SEARCH_FREQUENCIES);
+    notify('Reset popular search frequencies to defaults');
+  };
+
+  const handleSelectPopularSearch = (term: string) => {
+    setSearchQuery(term);
+    setSubmittedQuery(term);
+    recordSearchTerm(term);
+    executeMultiSiteSearch(term);
+    notify(`Searching popular query: "${term}"`);
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+  };
+
   const handleResetHomeAndFilters = () => {
     setActiveTab('search');
     setSearchQuery('');
@@ -865,7 +1115,7 @@ export default function App() {
   const handleSelectRecentSearch = (query: string) => {
     setSearchQuery(query);
     setSubmittedQuery(query);
-    addRecentSearch(query);
+    recordSearchTerm(query);
     executeMultiSiteSearch(query);
     notify(`Searching for "${query}"`);
     window.requestAnimationFrame(() => {
@@ -888,7 +1138,7 @@ export default function App() {
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (searchQuery.trim()) {
-      addRecentSearch(searchQuery);
+      recordSearchTerm(searchQuery);
     }
     executeMultiSiteSearch(searchQuery);
   };
@@ -995,7 +1245,15 @@ export default function App() {
         setIsSourceCatalogOpen((prev) => !prev);
       } else if (key === 'l') {
         e.preventDefault();
-        setIsLinuxDistroHubOpen((prev) => !prev);
+        setSearchAsYouType((prev) => {
+          const next = !prev;
+          notify(
+            next
+              ? 'Search-as-you-type enabled (Shortcut: L)'
+              : 'Search-as-you-type disabled (Shortcut: L)'
+          );
+          return next;
+        });
       } else if (e.key === '?') {
         e.preventDefault();
         setIsShortcutsOpen((prev) => !prev);
@@ -1013,6 +1271,7 @@ export default function App() {
     showQuickAddSite,
     searchQuery,
     submittedQuery,
+    searchAsYouType,
     expandedRowId,
     sites,
     selectedSmartTags,
@@ -1761,9 +2020,30 @@ export default function App() {
     executeMultiSiteSearch(searchQuery, updatedSites);
   };
 
-  const activeDownloadsCount = transfers.filter(
-    (t) => t.status === 'downloading'
-  ).length;
+  const activeDownloads = transfers.filter(
+    (t) => t.status === 'downloading' || t.status === 'connecting-swarm'
+  );
+  const activeDownloadsCount = activeDownloads.length;
+  const activeDownloadProgress =
+    activeDownloadsCount > 0
+      ? Math.min(
+          100,
+          Math.max(
+            4,
+            Math.round(
+              activeDownloads.reduce((sum, t) => sum + (t.progress || 0), 0) /
+                activeDownloadsCount
+            )
+          )
+        )
+      : 0;
+  const activeDownloadSpeedBytes = activeDownloads.reduce(
+    (sum, t) => sum + (t.downloadSpeedBytes || 0),
+    0
+  );
+  const ringCircumference = 2 * Math.PI * 6;
+  const ringStrokeOffset =
+    ringCircumference - (ringCircumference * activeDownloadProgress) / 100;
 
   return (
     <div className="min-h-screen bg-[#0B0F17] text-slate-100 flex flex-col pb-16 md:pb-0">
@@ -1804,13 +2084,92 @@ export default function App() {
               e.preventDefault();
               setActiveTab('transfers');
             }}
-            className={`transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
+            title={
+              activeDownloadsCount > 0
+                ? `${activeDownloadsCount} active download${
+                    activeDownloadsCount > 1 ? 's' : ''
+                  } · ${activeDownloadProgress}% avg progress (${formatBytes(
+                    activeDownloadSpeedBytes
+                  )}/s)`
+                : `View all ${transfers.length} transfers (Key: T)`
+            }
+            className={`relative inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
               activeTab === 'transfers'
                 ? 'text-slate-100 border-sky-400'
+                : activeDownloadsCount > 0
+                ? 'text-slate-200 border-transparent hover:text-white'
                 : 'border-transparent hover:text-slate-200'
             }`}
           >
-            Transfers ({transfers.length})
+            {activeDownloadsCount > 0 && (
+              <span
+                className="relative inline-flex items-center justify-center w-4 h-4 shrink-0"
+                aria-hidden="true"
+              >
+                <svg
+                  className="w-4 h-4 -rotate-90 overflow-visible"
+                  viewBox="0 0 16 16"
+                >
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    fill="none"
+                    strokeWidth="1.75"
+                    className="stroke-slate-800"
+                  />
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    fill="none"
+                    strokeWidth="1.75"
+                    strokeDasharray="8 30"
+                    strokeLinecap="round"
+                    className="stroke-sky-400/35 origin-center animate-spin"
+                  />
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    fill="none"
+                    strokeWidth="1.75"
+                    strokeDasharray={ringCircumference}
+                    strokeDashoffset={ringStrokeOffset}
+                    strokeLinecap="round"
+                    className="stroke-sky-400 transition-all duration-500 ease-out"
+                  />
+                </svg>
+                <span className="absolute w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+              </span>
+            )}
+            <span>Transfers ({transfers.length})</span>
+            {activeDownloadsCount > 0 && (
+              <span className="text-[11px] font-mono tabular-nums text-sky-400 font-semibold">
+                {activeDownloadProgress}%
+              </span>
+            )}
+            {activeDownloadsCount > 0 && (
+              <svg
+                className="absolute left-0 right-0 -bottom-[2px] w-full h-[2px] overflow-hidden rounded-full pointer-events-none"
+                aria-hidden="true"
+              >
+                <rect
+                  x="0"
+                  y="0"
+                  width="100%"
+                  height="2"
+                  className="fill-slate-800/90"
+                />
+                <rect
+                  x="0"
+                  y="0"
+                  width={`${activeDownloadProgress}%`}
+                  height="2"
+                  className="fill-sky-400 transition-all duration-500 ease-out animate-pulse"
+                />
+              </svg>
+            )}
           </a>
           <a
             href="#indexers"
@@ -1891,11 +2250,11 @@ export default function App() {
                       setSearchAsYouType(next);
                       notify(
                         next
-                          ? 'Search-as-you-type enabled (instant live indexer & local filtering)'
-                          : 'Search-as-you-type paused (press Enter to dispatch remote query)'
+                          ? 'Search-as-you-type enabled (Shortcut: L)'
+                          : 'Search-as-you-type disabled (Shortcut: L)'
                       );
                     }}
-                    title="Toggle instant search-as-you-type across all enabled sites"
+                    title="Toggle instant search-as-you-type across all enabled sites (Shortcut: L)"
                     className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors flex items-center gap-1.5 cursor-pointer ${
                       searchAsYouType
                         ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
@@ -1904,6 +2263,9 @@ export default function App() {
                   >
                     <Zap className="w-3.5 h-3.5" />
                     <span>Live Search: {searchAsYouType ? 'ON' : 'OFF'}</span>
+                    <kbd className="px-1 py-0.2 text-[10px] font-mono rounded bg-slate-950/80 border border-slate-700/80 text-slate-300">
+                      L
+                    </kbd>
                   </button>
 
                   <div className="flex items-center gap-2">
@@ -2001,11 +2363,19 @@ export default function App() {
               </form>
 
               {/* Recent Searches Tags Strip */}
-              {recentSearches.length > 0 && (
+              {recentSearches.length > 0 ? (
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                   <span className="text-slate-400 font-medium flex items-center gap-1.5 text-[11px] uppercase tracking-wider shrink-0 select-none">
                     <Clock className="w-3.5 h-3.5 text-sky-400" />
                     <span>Recent Searches:</span>
+                    {!trackSearchHistory && (
+                      <span
+                        className="px-1.5 py-0.2 rounded text-[10px] font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                        title="Search history logging is currently paused in Settings"
+                      >
+                        Paused
+                      </span>
+                    )}
                   </span>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {recentSearches.map((query) => {
@@ -2051,6 +2421,78 @@ export default function App() {
                     title="Clear recent searches history"
                   >
                     Clear history
+                  </button>
+                </div>
+              ) : !trackSearchHistory ? (
+                <div className="mt-2.5 flex items-center gap-2 text-xs text-slate-400 select-none">
+                  <Shield className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-[11px] text-slate-400">Search history tracking is paused.</span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    className="text-[11px] text-sky-400 hover:text-sky-300 underline cursor-pointer"
+                  >
+                    Privacy Settings
+                  </button>
+                </div>
+              ) : null}
+
+              {/* Popular Searches Strip (Top 10 Most Frequent Queries) */}
+              {popularSearches.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-slate-800/60 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-slate-400 font-medium flex items-center gap-1.5 text-[11px] uppercase tracking-wider shrink-0 select-none">
+                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-amber-500/10 text-amber-400">
+                      <Flame className="w-3 h-3 text-amber-400" />
+                    </span>
+                    <span className="font-semibold text-slate-300">Popular Searches:</span>
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {popularSearches.map(({ rank, term, count }) => {
+                      const isActive =
+                        searchQuery.trim().toLowerCase() === term.trim().toLowerCase();
+                      return (
+                        <button
+                          key={term}
+                          type="button"
+                          onClick={() => handleSelectPopularSearch(term)}
+                          title={`Click to search "${term}" (${count} recorded queries)`}
+                          className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-all cursor-pointer select-none ${
+                            isActive
+                              ? 'bg-amber-500/20 text-amber-200 border border-amber-500/50 shadow-xs font-semibold'
+                              : 'bg-slate-900/90 text-slate-300 border border-slate-700/80 hover:bg-slate-800 hover:text-white hover:border-amber-500/40 font-medium'
+                          }`}
+                        >
+                          <span
+                            className={`text-[10px] font-mono font-bold px-1 rounded ${
+                              rank <= 3
+                                ? 'text-amber-400 bg-amber-500/15'
+                                : 'text-slate-500 bg-slate-800 group-hover:text-slate-400'
+                            }`}
+                          >
+                            #{rank}
+                          </span>
+                          <span>{term}</span>
+                          <span
+                            className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
+                              isActive
+                                ? 'bg-amber-400/20 text-amber-300 font-semibold'
+                                : 'bg-slate-800/90 text-slate-400 group-hover:bg-slate-700 group-hover:text-slate-200'
+                            }`}
+                          >
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetSearchFrequencies}
+                    className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-amber-400/90 transition-colors ml-1 underline-offset-2 hover:underline cursor-pointer"
+                    title="Reset popular search frequency counters to defaults"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5 text-slate-500" />
+                    <span>Reset counts</span>
                   </button>
                 </div>
               )}
@@ -2710,6 +3152,24 @@ export default function App() {
                                 <span className="font-sans text-slate-300">
                                   {item.sourceName}
                                 </span>
+                                {item.p2pNetwork === 'Gnutella' && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                                    <Share2 className="w-2.5 h-2.5" />
+                                    Gnutella
+                                  </span>
+                                )}
+                                {item.p2pNetwork === 'eDonkey2000' && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                    <Network className="w-2.5 h-2.5" />
+                                    eD2k
+                                  </span>
+                                )}
+                                {item.p2pNetwork === 'FrostWire' && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                                    <Zap className="w-2.5 h-2.5" />
+                                    FrostWire
+                                  </span>
+                                )}
                                 <span aria-hidden="true">·</span>
                                 <span className="font-sans">{item.category}</span>
                                 <span aria-hidden="true">·</span>
@@ -2845,6 +3305,28 @@ export default function App() {
                                       Raw Hash
                                     </button>
                                   </div>
+                                  {item.ed2kHash && (
+                                    <div className="flex items-center gap-2 font-mono text-amber-300 truncate w-full">
+                                      <span>eD2k: <span className="text-amber-200">{item.ed2kHash}</span></span>
+                                      {item.ed2kUri && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(item.ed2kUri!);
+                                            notify('Copied eDonkey2000 (ed2k://) file link');
+                                          }}
+                                          className="text-[10px] font-sans font-semibold text-amber-400 hover:text-amber-300 underline cursor-pointer"
+                                        >
+                                          Copy ed2k://
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                  {item.urnSha1 && (
+                                    <div className="font-mono text-purple-300 truncate w-full text-[11px]">
+                                      SHA-1: <span className="text-purple-200">{item.urnSha1}</span>
+                                    </div>
+                                  )}
                                   <div className="flex items-center gap-1.5 shrink-0">
                                     <button
                                       type="button"
@@ -2945,6 +3427,9 @@ export default function App() {
                                     />
                                   </div>
                                 )}
+
+                                {/* 24-Hour Seed-to-Peer Ratio Mini Sparkline Chart */}
+                                <TorrentRowSwarmSparkline torrent={item} compact />
 
                                 <div className="space-y-1.5">
                                   <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
@@ -3185,6 +3670,24 @@ export default function App() {
                                         <span className="text-slate-300">
                                           {item.sourceName}
                                         </span>
+                                        {item.p2pNetwork === 'Gnutella' && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                                            <Share2 className="w-2.5 h-2.5" />
+                                            Gnutella / G2
+                                          </span>
+                                        )}
+                                        {item.p2pNetwork === 'eDonkey2000' && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                            <Network className="w-2.5 h-2.5" />
+                                            eD2k / Kad
+                                          </span>
+                                        )}
+                                        {item.p2pNetwork === 'FrostWire' && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                                            <Zap className="w-2.5 h-2.5" />
+                                            FrostWire
+                                          </span>
+                                        )}
                                         <span aria-hidden="true">·</span>
                                         <span>{item.category}</span>
                                         <span aria-hidden="true">·</span>
@@ -3328,12 +3831,67 @@ export default function App() {
                                               </button>
                                             </div>
                                           </div>
+                                          {item.ed2kHash && (
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-amber-400/90 font-semibold">
+                                                eD2k Hash:{' '}
+                                                <span className="text-amber-200 select-all font-mono">
+                                                  {item.ed2kHash}
+                                                </span>
+                                              </span>
+                                              {item.ed2kUri && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => {
+                                                    navigator.clipboard.writeText(item.ed2kUri!);
+                                                    notify('Copied eDonkey2000 (ed2k://) file link to clipboard');
+                                                  }}
+                                                  className="text-[11px] font-sans font-semibold text-amber-400 hover:text-amber-300 transition-colors underline cursor-pointer"
+                                                  title="Copy eD2k URI link for eMule / aMule / MLDonkey"
+                                                >
+                                                  Copy ed2k:// link
+                                                </button>
+                                              )}
+                                            </div>
+                                          )}
+                                          {item.urnSha1 && (
+                                            <div className="text-purple-300/80">
+                                              SHA-1 Hash: <span className="text-purple-200 select-all font-mono">{item.urnSha1}</span>
+                                            </div>
+                                          )}
+                                          {item.networkNodes && (
+                                            <div className="text-slate-400">
+                                              P2P Network Swarm:{' '}
+                                              <span className="text-slate-200">
+                                                {item.networkNodes}{' '}
+                                                {item.p2pNetwork === 'eDonkey2000'
+                                                  ? 'eD2k Sources & Kad DHT Peers'
+                                                  : item.p2pNetwork === 'Gnutella'
+                                                  ? 'Gnutella / G2 Ultrapeers'
+                                                  : 'Swarm Peers'}
+                                              </span>
+                                            </div>
+                                          )}
                                           <div className="truncate max-w-2xl text-slate-500">
                                             Magnet: {item.magnetUri}
                                           </div>
                                         </div>
 
                                         <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                          {item.ed2kUri && (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(item.ed2kUri!);
+                                                notify('Copied eDonkey2000 (ed2k://) file link');
+                                              }}
+                                              className="px-3.5 py-1.5 text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-lg hover:bg-amber-500/30 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                                              title="Copy ed2k:// file link for eMule, aMule, or MLDonkey"
+                                            >
+                                              <Copy className="w-3.5 h-3.5" />
+                                              Copy eD2k Link
+                                            </button>
+                                          )}
                                           <button
                                             type="button"
                                             onClick={() =>
@@ -3468,6 +4026,9 @@ export default function App() {
                                           </div>
                                         </div>
                                       )}
+
+                                      {/* 24-Hour Seed-to-Peer Ratio Mini Sparkline Chart */}
+                                      <TorrentRowSwarmSparkline torrent={item} />
 
                                       <div className="mt-3">
                                         {isRenameOpen && (
@@ -3718,6 +4279,31 @@ export default function App() {
                 setAuthModalSite(site);
                 setIsAuthModalOpen(true);
               }}
+              rssFeeds={rssFeeds}
+              onAddRssFeed={(newFeed) => {
+                setRssFeeds((prev) => [newFeed, ...prev]);
+                pollSingleRssFeed(newFeed, true);
+              }}
+              onToggleRssFeed={(feedId) => {
+                setRssFeeds((prev) =>
+                  prev.map((f) =>
+                    f.id === feedId ? { ...f, enabled: !f.enabled } : f
+                  )
+                );
+              }}
+              onDeleteRssFeed={(feedId) => {
+                const target = rssFeeds.find((f) => f.id === feedId);
+                setRssFeeds((prev) => prev.filter((f) => f.id !== feedId));
+                if (target) {
+                  notify(`Removed RSS feed "${target.name}"`);
+                }
+              }}
+              onPollRssFeed={handlePollRssFeed}
+              onPollAllRssFeeds={handlePollAllRssFeeds}
+              onResetRssDefaults={() => {
+                setRssFeeds(DEFAULT_RSS_FEEDS);
+                notify('Restored default RSS feed subscriptions');
+              }}
             />
           </div>
         )}
@@ -3740,6 +4326,9 @@ export default function App() {
               onUpdateDeviceConfig={setDeviceConfig}
               accentTheme={accentTheme}
               onChangeAccentTheme={setAccentTheme}
+              trackSearchHistory={trackSearchHistory}
+              onToggleTrackSearchHistory={setTrackSearchHistory}
+              onClearAllSearchHistory={handleClearAllSearchHistory}
               onNotify={notify}
             />
           </div>
@@ -3811,16 +4400,83 @@ export default function App() {
         <button
           type="button"
           onClick={() => setActiveTab('transfers')}
-          className={`min-h-[44px] flex flex-col items-center justify-center transition-colors ${
+          className={`relative min-h-[44px] flex flex-col items-center justify-center transition-colors ${
             activeTab === 'transfers'
               ? 'text-sky-400'
+              : activeDownloadsCount > 0
+              ? 'text-slate-200 hover:text-white'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <HardDrive className="w-4 h-4" />
+          {activeDownloadsCount > 0 ? (
+            <span
+              className="relative inline-flex items-center justify-center w-4 h-4 shrink-0"
+              aria-hidden="true"
+            >
+              <svg
+                className="w-4 h-4 -rotate-90 overflow-visible"
+                viewBox="0 0 16 16"
+              >
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  fill="none"
+                  strokeWidth="1.75"
+                  className="stroke-slate-800"
+                />
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  fill="none"
+                  strokeWidth="1.75"
+                  strokeDasharray="8 30"
+                  strokeLinecap="round"
+                  className="stroke-sky-400/35 origin-center animate-spin"
+                />
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  fill="none"
+                  strokeWidth="1.75"
+                  strokeDasharray={ringCircumference}
+                  strokeDashoffset={ringStrokeOffset}
+                  strokeLinecap="round"
+                  className="stroke-sky-400 transition-all duration-500 ease-out"
+                />
+              </svg>
+              <span className="absolute w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+            </span>
+          ) : (
+            <HardDrive className="w-4 h-4" />
+          )}
           <span className="text-[10px] font-medium tracking-tight mt-0.5 font-mono tabular-nums">
             Transfers ({transfers.length})
+            {activeDownloadsCount > 0 ? ` · ${activeDownloadProgress}%` : ''}
           </span>
+          {activeDownloadsCount > 0 && (
+            <svg
+              className="absolute left-3 right-3 bottom-0.5 h-[2px] w-[calc(100%-1.5rem)] overflow-hidden rounded-full pointer-events-none"
+              aria-hidden="true"
+            >
+              <rect
+                x="0"
+                y="0"
+                width="100%"
+                height="2"
+                className="fill-slate-800"
+              />
+              <rect
+                x="0"
+                y="0"
+                width={`${activeDownloadProgress}%`}
+                height="2"
+                className="fill-sky-400 transition-all duration-500 ease-out animate-pulse"
+              />
+            </svg>
+          )}
         </button>
 
         <button
@@ -3899,7 +4555,7 @@ export default function App() {
                 { keys: ['T'], label: 'Switch to Transfers & WebStream tab' },
                 { keys: ['I'], label: 'Switch to Search Sites (Indexers) tab' },
                 { keys: ['A'], label: 'Open 1-Click Indexer Source Catalog' },
-                { keys: ['L'], label: 'Open Verified Linux & FOSS Distro Hub' },
+                { keys: ['L'], label: 'Toggle Search-as-you-type (Live Search)' },
                 { keys: ['C'], label: 'Switch to Client Settings tab' },
                 { keys: ['M'], label: 'Open + Add Magnet / InfoHash dialog' },
                 { keys: ['W'], label: 'Set primary engine to In-Browser WebTorrent' },

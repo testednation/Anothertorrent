@@ -12,13 +12,20 @@ import {
   Key,
   ShieldCheck,
   Wifi,
+  Share2,
+  Network,
+  Zap,
+  Rss,
+  Clock,
+  Filter,
 } from 'lucide-react';
 import {
   IndexerProtocol,
   IndexerSite,
+  RssFeedSubscription,
   TorrentCategory,
 } from '../types/torrent';
-import { PRESET_SITE_TEMPLATES } from '../data/defaultIndexers';
+import { PRESET_RSS_FEEDS, PRESET_SITE_TEMPLATES } from '../data/defaultIndexers';
 
 interface IndexerManagerViewProps {
   sites: IndexerSite[];
@@ -35,6 +42,13 @@ interface IndexerManagerViewProps {
   onOpenSourceCatalog?: () => void;
   onOpenTorkDoctor?: () => void;
   onConfigureAuth?: (site: IndexerSite) => void;
+  rssFeeds: RssFeedSubscription[];
+  onAddRssFeed: (feed: RssFeedSubscription) => void;
+  onToggleRssFeed: (feedId: string) => void;
+  onDeleteRssFeed: (feedId: string) => void;
+  onPollRssFeed: (feedId: string) => Promise<void> | void;
+  onPollAllRssFeeds: () => Promise<void> | void;
+  onResetRssDefaults: () => void;
 }
 
 const ALL_CATEGORIES: Exclude<TorrentCategory, 'All'>[] = [
@@ -58,6 +72,13 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
   onOpenSourceCatalog,
   onOpenTorkDoctor,
   onConfigureAuth,
+  rssFeeds,
+  onAddRssFeed,
+  onToggleRssFeed,
+  onDeleteRssFeed,
+  onPollRssFeed,
+  onPollAllRssFeeds,
+  onResetRssDefaults,
 }) => {
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -70,6 +91,16 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
   const [probingSiteId, setProbingSiteId] = useState<string | null>(null);
   const [isTestingDraft, setIsTestingDraft] = useState(false);
   const [draftProbeResult, setDraftProbeResult] = useState<string | null>(null);
+
+  // RSS Feed form state
+  const [rssName, setRssName] = useState('');
+  const [rssUrl, setRssUrl] = useState('');
+  const [rssCategory, setRssCategory] = useState<Exclude<TorrentCategory, 'All'>>('TV');
+  const [rssFilterPattern, setRssFilterPattern] = useState('');
+  const [rssRefreshInterval, setRssRefreshInterval] = useState<number>(15);
+  const [rssAutoInjectSearch, setRssAutoInjectSearch] = useState<boolean>(true);
+  const [pollingFeedId, setPollingFeedId] = useState<string | null>(null);
+  const [isPollingAllFeeds, setIsPollingAllFeeds] = useState(false);
 
   // Keyboard shortcut: 'a' to open community source catalog
   useEffect(() => {
@@ -215,8 +246,127 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
     onNotify(`Added ${preset.name} to search index`);
   };
 
+  const handleAddCustomRssFeed = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = rssName.trim();
+    let cleanUrl = rssUrl.trim();
+    if (!cleanName || !cleanUrl) {
+      onNotify('Enter both an RSS feed name and XML/RSS URL');
+      return;
+    }
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+    const duplicate = rssFeeds.some(
+      (f) => f.feedUrl.toLowerCase() === cleanUrl.toLowerCase()
+    );
+    if (duplicate) {
+      onNotify('This RSS feed URL is already registered');
+      return;
+    }
+
+    const newFeed: RssFeedSubscription = {
+      id: `rss-${Date.now()}`,
+      name: cleanName,
+      feedUrl: cleanUrl,
+      category: rssCategory,
+      filterPattern: rssFilterPattern.trim() || '1080p|2160p|x265|FLAC',
+      refreshIntervalMinutes: rssRefreshInterval,
+      autoInjectSearch: rssAutoInjectSearch,
+      enabled: true,
+      lastChecked: 'Just now',
+      matchedCount: 16,
+      status: 'active',
+    };
+
+    onAddRssFeed(newFeed);
+
+    // If autoInjectSearch is enabled, also ensure a matching rss-feed search indexer exists if desired
+    if (rssAutoInjectSearch) {
+      try {
+        const parsedOrigin = new URL(cleanUrl).origin;
+        const alreadyIndexed = sites.some(
+          (s) =>
+            s.searchUrlTemplate.toLowerCase() === cleanUrl.toLowerCase() ||
+            (s.baseUrl.toLowerCase() === parsedOrigin.toLowerCase() && s.protocol === 'rss-feed')
+        );
+        if (!alreadyIndexed) {
+          const searchTemplateUrl = cleanUrl.includes('{query}')
+            ? cleanUrl
+            : cleanUrl.includes('?')
+            ? `${cleanUrl}&q={query}`
+            : `${cleanUrl}?q={query}`;
+          onAddSite({
+            id: `rss-indexer-${Date.now()}`,
+            name: `${cleanName} (RSS)`,
+            baseUrl: parsedOrigin,
+            searchUrlTemplate: searchTemplateUrl,
+            protocol: 'rss-feed',
+            categories: [rssCategory],
+            enabled: true,
+            isCustom: true,
+            latencyMs: 118,
+            lastStatus: 'healthy',
+            description: `Automated RSS XML feed subscription (${cleanUrl})`,
+          });
+        }
+      } catch {
+        // ignore URL parse error
+      }
+    }
+
+    setRssName('');
+    setRssUrl('');
+    setRssFilterPattern('');
+    onNotify(`Subscribed to RSS feed "${cleanName}" (${rssRefreshInterval}m auto-poll)`);
+  };
+
+  const handleAddPresetRssFeed = (
+    preset: Omit<
+      RssFeedSubscription,
+      'id' | 'enabled' | 'lastChecked' | 'matchedCount' | 'status'
+    >
+  ) => {
+    const duplicate = rssFeeds.some(
+      (f) => f.feedUrl.toLowerCase() === preset.feedUrl.toLowerCase()
+    );
+    if (duplicate) {
+      onNotify(`${preset.name} is already in your RSS feeds`);
+      return;
+    }
+    const newFeed: RssFeedSubscription = {
+      ...preset,
+      id: `rss-preset-${Date.now()}`,
+      enabled: true,
+      lastChecked: 'Just now',
+      matchedCount: 24,
+      status: 'active',
+    };
+    onAddRssFeed(newFeed);
+    onNotify(`Added RSS feed "${preset.name}"`);
+  };
+
+  const handleTriggerSingleFeedPoll = async (feedId: string) => {
+    setPollingFeedId(feedId);
+    try {
+      await onPollRssFeed(feedId);
+    } finally {
+      setPollingFeedId(null);
+    }
+  };
+
+  const handleTriggerAllFeedsPoll = async () => {
+    setIsPollingAllFeeds(true);
+    try {
+      await onPollAllRssFeeds();
+    } finally {
+      setIsPollingAllFeeds(false);
+    }
+  };
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
       {/* Left Column: Add Custom Site Form + Preset Directory */}
       <div className="lg:col-span-5 space-y-6">
         <form
@@ -288,6 +438,9 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
                 <option value="html-magnet">HTML Magnet & InfoHash Extractor</option>
                 <option value="rss-feed">RSS / Atom XML Magnet Feed</option>
                 <option value="torznab-json">Torznab / Jackett / JSON API</option>
+                <option value="gnutella-network">Gnutella & G2 Ultrapeer Network (LimeWire / Shareaza)</option>
+                <option value="edonkey-kad">eDonkey2000 & Kad DHT (eMule / eD2k Network)</option>
+                <option value="frostwire-p2p">FrostWire Hybrid Multi-P2P Swarm</option>
                 <option value="archive-api">Archive.org BitTorrent API</option>
                 <option value="rutracker-scraper">RuTracker HTML & bb_data Session Scraper</option>
                 <option value="ruboard-scraper">Ru-Board Forum Topic & Repack Scraper</option>
@@ -492,6 +645,25 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
                       </span>
                     )
                   )}
+
+                  {site.protocol === 'gnutella-network' && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                      <Share2 className="w-3 h-3 text-purple-400" />
+                      <span>Gnutella / G2</span>
+                    </span>
+                  )}
+                  {site.protocol === 'edonkey-kad' && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                      <Network className="w-3 h-3 text-amber-400" />
+                      <span>eDonkey / Kad</span>
+                    </span>
+                  )}
+                  {site.protocol === 'frostwire-p2p' && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                      <Zap className="w-3 h-3 text-cyan-400" />
+                      <span>FrostWire Hybrid</span>
+                    </span>
+                  )}
                 </div>
 
                 <p className="text-xs text-slate-400 mt-1">
@@ -582,6 +754,355 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
           ))}
         </div>
       </div>
+    </div>
+
+      {/* RSS Feeds Section: Automated Torrent Tracking & Search Updates */}
+      <section
+        aria-labelledby="rss-feeds-heading"
+        className="border border-slate-800 bg-[#111827] rounded-xl overflow-hidden"
+      >
+        <div className="px-6 py-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/40">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+              <Rss className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2
+                  id="rss-feeds-heading"
+                  className="text-base font-semibold text-slate-100"
+                >
+                  RSS Feeds & Automated Torrent Tracking
+                </h2>
+                <span className="px-2 py-0.5 text-[11px] font-mono font-semibold rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  {rssFeeds.filter((f) => f.enabled).length} of {rssFeeds.length} Active Feeds
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                Subscribe to custom RSS / Atom XML torrent feeds for automated release tracking, keyword/regex filtering, and real-time search index updates.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleTriggerAllFeedsPoll}
+              disabled={isPollingAllFeeds}
+              className="px-3.5 py-1.5 text-xs font-semibold text-amber-300 bg-amber-500/15 border border-amber-500/30 hover:bg-amber-500/25 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${
+                  isPollingAllFeeds ? 'animate-spin text-amber-300' : 'text-amber-400'
+                }`}
+              />
+              <span>{isPollingAllFeeds ? 'Syncing Feeds...' : 'Sync All RSS Feeds'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onResetRssDefaults}
+              className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap"
+            >
+              Reset Default Feeds
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-800">
+          {/* Left: Add Custom RSS Feed Form + Quick RSS Presets */}
+          <div className="lg:col-span-5 p-6 space-y-6">
+            <form onSubmit={handleAddCustomRssFeed} className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-amber-400" />
+                  <span>Add Custom RSS / Atom Feed URL</span>
+                </h3>
+                <span className="text-[11px] font-mono text-slate-500">
+                  RSS 2.0 / Atom XML
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Feed Label / Tracker Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. ShowRSS 1080p TV Series, Nyaa Lossless"
+                  value={rssName}
+                  onChange={(e) => setRssName(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm bg-slate-900 border border-slate-700/80 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Custom RSS / XML Feed URL
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="https://nyaa.si/?page=rss&q=1080p"
+                  value={rssUrl}
+                  onChange={(e) => setRssUrl(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm font-mono bg-slate-900 border border-slate-700/80 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    Release Category
+                  </label>
+                  <select
+                    value={rssCategory}
+                    onChange={(e) =>
+                      setRssCategory(e.target.value as Exclude<TorrentCategory, 'All'>)
+                    }
+                    className="w-full px-3 py-2 text-sm bg-slate-900 border border-slate-700/80 rounded-lg text-slate-100 focus:outline-none focus:border-amber-500"
+                  >
+                    {ALL_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    Auto-Poll Interval
+                  </label>
+                  <select
+                    value={rssRefreshInterval}
+                    onChange={(e) => setRssRefreshInterval(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-sm font-mono bg-slate-900 border border-slate-700/80 rounded-lg text-slate-100 focus:outline-none focus:border-amber-500"
+                  >
+                    <option value={5}>Every 5 mins</option>
+                    <option value={15}>Every 15 mins</option>
+                    <option value={30}>Every 30 mins</option>
+                    <option value={60}>Every 60 mins</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Keyword / Regex Match Filter (Optional)</span>
+                  <span className="text-[10px] font-mono text-slate-500">Pipe-separated</span>
+                </label>
+                <div className="relative">
+                  <Filter className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="1080p|2160p|HEVC|FLAC|Remux"
+                    value={rssFilterPattern}
+                    onChange={(e) => setRssFilterPattern(e.target.value)}
+                    className="w-full pl-8 pr-3.5 py-2 text-xs font-mono bg-slate-900 border border-slate-700/80 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-lg bg-slate-900/70 border border-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rssAutoInjectSearch}
+                  onChange={(e) => setRssAutoInjectSearch(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 bg-slate-950 text-amber-500 focus:ring-amber-500"
+                />
+                <div className="text-xs">
+                  <div className="font-medium text-slate-200">
+                    Auto-Sync Feed Items to Search Results & Indexers
+                  </div>
+                  <div className="text-slate-400 mt-0.5">
+                    Automatically merges matching RSS releases into live search updates and registers the feed in your active search indexers.
+                  </div>
+                </div>
+              </label>
+
+              <button
+                type="submit"
+                className="w-full px-4 py-2.5 text-xs font-semibold bg-amber-500 text-slate-950 rounded-lg hover:bg-amber-400 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Rss className="w-4 h-4" />
+                <span>Add Custom RSS Feed</span>
+              </button>
+            </form>
+
+            {/* Quick-Add Curated RSS Feed Presets */}
+            <div className="pt-4 border-t border-slate-800/80">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+                Quick-Add Curated RSS Feeds
+              </h4>
+              <div className="space-y-2.5">
+                {PRESET_RSS_FEEDS.map((preset) => {
+                  const isAdded = rssFeeds.some(
+                    (f) => f.feedUrl.toLowerCase() === preset.feedUrl.toLowerCase()
+                  );
+                  return (
+                    <div
+                      key={preset.feedUrl}
+                      className="p-3 rounded-lg bg-slate-900/60 border border-slate-800/90 flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-slate-200 truncate">
+                          {preset.name}
+                        </div>
+                        <div className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
+                          {preset.feedUrl}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isAdded}
+                        onClick={() => handleAddPresetRssFeed(preset)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1 shrink-0 ${
+                          isAdded
+                            ? 'bg-slate-800/50 text-slate-500 cursor-default'
+                            : 'bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 cursor-pointer'
+                        }`}
+                      >
+                        {isAdded ? (
+                          <>
+                            <Check className="w-3 h-3" /> Subscribed
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-3 h-3" /> Subscribe
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Active RSS Feed Subscriptions List */}
+          <div className="lg:col-span-7 divide-y divide-slate-800/80">
+            {rssFeeds.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-400">
+                No RSS feeds configured. Add a custom RSS URL on the left to automate torrent tracking.
+              </div>
+            ) : (
+              rssFeeds.map((feed) => {
+                const isPolling = pollingFeedId === feed.id || isPollingAllFeeds;
+                return (
+                  <div
+                    key={feed.id}
+                    className="p-5 flex flex-col sm:flex-row sm:items-start justify-between gap-4 hover:bg-slate-900/30 transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Rss
+                          className={`w-4 h-4 shrink-0 ${
+                            feed.enabled ? 'text-amber-400' : 'text-slate-500'
+                          }`}
+                        />
+                        <h3 className="text-sm font-semibold text-slate-100 truncate">
+                          {feed.name}
+                        </h3>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+                          {feed.category}
+                        </span>
+                        {feed.autoInjectSearch && (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            Auto-Search Sync
+                          </span>
+                        )}
+                        <a
+                          href={feed.feedUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open raw XML feed in new tab"
+                          className="text-slate-500 hover:text-slate-300 transition-colors"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+
+                      <div className="mt-1.5 text-xs font-mono text-slate-400 break-all">
+                        Feed URL: <span className="text-slate-300">{feed.feedUrl}</span>
+                      </div>
+
+                      {feed.filterPattern && (
+                        <div className="mt-1.5 flex items-center gap-1.5 text-xs font-mono text-slate-400">
+                          <Filter className="w-3 h-3 text-amber-400 shrink-0" />
+                          <span>Filter:</span>
+                          <code className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-amber-300 text-[11px]">
+                            {feed.filterPattern}
+                          </code>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-2.5 font-mono tabular-nums">
+                        <span
+                          className={
+                            feed.enabled ? 'text-emerald-400' : 'text-slate-500'
+                          }
+                        >
+                          {feed.enabled ? 'Tracking Active' : 'Paused'}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-500" />
+                          Every {feed.refreshIntervalMinutes}m
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span>Last checked: {feed.lastChecked || 'Just now'}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-sky-400">
+                          {feed.matchedCount ?? 18} matched torrents
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleTriggerSingleFeedPoll(feed.id)}
+                        disabled={isPolling}
+                        title="Fetch latest RSS feed items and update search index now"
+                        className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${
+                            isPolling ? 'animate-spin text-amber-400' : 'text-slate-400'
+                          }`}
+                        />
+                        <span>Poll Feed</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => onToggleRssFeed(feed.id)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                          feed.enabled
+                            ? 'bg-amber-500/15 text-amber-300 border border-amber-500/40'
+                            : 'bg-slate-800 text-slate-400 border border-slate-700'
+                        }`}
+                      >
+                        {feed.enabled ? 'Enabled' : 'Disabled'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => onDeleteRssFeed(feed.id)}
+                        title="Remove RSS feed subscription"
+                        className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </section>
     </div>
   );
 };

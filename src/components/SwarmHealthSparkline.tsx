@@ -18,13 +18,14 @@ import {
   Tooltip,
   ReferenceLine,
 } from 'recharts';
-import { SwarmHealthSample, TransferSession } from '../types/torrent';
+import { SwarmHealthSample, TorrentItem, TransferSession } from '../types/torrent';
 import {
   SWARM_STALL_THRESHOLD,
   isSwarmStallRisk,
   getViabilityBadgeDetails,
   getViabilityDiagnosis,
   getViabilityScore,
+  generate24HourTorrentSwarmHistory,
 } from '../services/swarmHealth';
 
 interface CustomTooltipProps {
@@ -763,3 +764,265 @@ export const SwarmHealthSparkline: React.FC<SwarmHealthSparklineProps> = ({
     </div>
   );
 };
+
+interface TorrentRowSwarmSparklineProps {
+  torrent: TorrentItem;
+  compact?: boolean;
+}
+
+export const TorrentRowSwarmSparkline: React.FC<TorrentRowSwarmSparklineProps> = ({
+  torrent,
+  compact = false,
+}) => {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+
+  const history24h = useMemo(
+    () =>
+      generate24HourTorrentSwarmHistory(
+        torrent.infoHash || torrent.id,
+        torrent.seeders,
+        torrent.leechers
+      ),
+    [torrent.infoHash, torrent.id, torrent.seeders, torrent.leechers]
+  );
+
+  const latest = history24h[history24h.length - 1];
+  const earliest = history24h[0];
+  const activeSample =
+    hoveredIdx !== null && history24h[hoveredIdx]
+      ? history24h[hoveredIdx]
+      : latest;
+
+  const badge = getViabilityBadgeDetails(activeSample.viability);
+  const delta24h = Number((latest.ratio - earliest.ratio).toFixed(2));
+  const isTrendingUp = delta24h >= 0;
+
+  const ratios = history24h.map((h) => h.ratio);
+  const minRatio = Math.min(...ratios);
+  const maxRatio = Math.max(...ratios);
+  const avgRatio = Number(
+    (ratios.reduce((sum, r) => sum + r, 0) / Math.max(1, ratios.length)).toFixed(2)
+  );
+
+  const svgWidth = compact ? 240 : 320;
+  const svgHeight = compact ? 38 : 44;
+  const plotMin = Math.min(minRatio * 0.9, 0.8);
+  const plotMax = Math.max(maxRatio * 1.08, 1.5);
+  const plotRange = Math.max(0.01, plotMax - plotMin);
+
+  const coords = history24h.map((sample, idx) => {
+    const x =
+      (idx / Math.max(1, history24h.length - 1)) * (svgWidth - 8) + 4;
+    const y =
+      svgHeight -
+      ((sample.ratio - plotMin) / plotRange) * (svgHeight - 10) -
+      5;
+    return { x, y, sample, idx };
+  });
+
+  const linePoints = coords
+    .map((pt) => `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`)
+    .join(' ');
+  const areaPoints =
+    coords.length > 0
+      ? `${coords[0].x.toFixed(1)},${svgHeight} ${linePoints} ${coords[
+          coords.length - 1
+        ].x.toFixed(1)},${svgHeight}`
+      : '';
+
+  const eqY =
+    plotMin <= 1.0 && plotMax >= 1.0
+      ? svgHeight - ((1.0 - plotMin) / plotRange) * (svgHeight - 10) - 5
+      : null;
+
+  const gradId = `row-spark-${torrent.id.replace(/[^a-zA-Z0-9_-]/g, '')}-${
+    compact ? 'mob' : 'desk'
+  }`;
+
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const idx = Math.round(
+      (relX / rect.width) * Math.max(0, history24h.length - 1)
+    );
+    setHoveredIdx(idx);
+  };
+
+  return (
+    <div
+      className="mt-3 p-3 rounded-xl bg-slate-950/75 border border-slate-800/90 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Left: Title + 24h Summary Readout */}
+      <div className="space-y-1 min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+            <Activity className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+            <span>24h Seed/Peer Ratio Trend</span>
+          </span>
+          <span
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border ${badge.bgColor} ${badge.textColor} ${badge.borderColor}`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${badge.dotColor}`} />
+            <span>{badge.shortLabel}</span>
+          </span>
+          <span
+            className={`inline-flex items-center gap-0.5 text-[11px] font-mono tabular-nums ${
+              isTrendingUp ? 'text-emerald-400' : 'text-amber-400'
+            }`}
+            title="Net seed-to-peer ratio change over the last 24 hours"
+          >
+            {isTrendingUp ? (
+              <TrendingUp className="w-3 h-3" />
+            ) : (
+              <TrendingDown className="w-3 h-3" />
+            )}
+            <span>
+              {isTrendingUp ? `+${delta24h.toFixed(2)}x` : `${delta24h.toFixed(2)}x`} (24h)
+            </span>
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums text-slate-400">
+          <span>
+            {hoveredIdx !== null ? (
+              <>
+                <span className="text-sky-400 font-semibold">
+                  {activeSample.time}
+                </span>
+                :{' '}
+              </>
+            ) : (
+              'Current: '
+            )}
+            <strong className="text-slate-100">
+              {activeSample.ratio.toFixed(2)}x
+            </strong>{' '}
+            <span className="text-emerald-400">{activeSample.seeds} S</span> /{' '}
+            <span className="text-sky-400">{activeSample.peers} P</span>
+          </span>
+          <span aria-hidden="true" className="text-slate-700">
+            ·
+          </span>
+          <span>
+            24h Avg: <span className="text-slate-200">{avgRatio.toFixed(2)}x</span>
+          </span>
+          <span aria-hidden="true" className="text-slate-700">
+            ·
+          </span>
+          <span>
+            Range:{' '}
+            <span className="text-slate-300">
+              {minRatio.toFixed(2)}x – {maxRatio.toFixed(2)}x
+            </span>
+          </span>
+        </div>
+      </div>
+
+      {/* Right: Interactive 24-Hour Mini Sparkline SVG */}
+      <div className="flex items-center gap-2.5 self-start lg:self-center shrink-0 w-full sm:w-auto">
+        <div className="flex flex-col items-end text-[10px] font-mono tabular-nums text-slate-500 select-none shrink-0">
+          <span>-24h</span>
+          <span className="text-slate-400 font-semibold">Now</span>
+        </div>
+
+        <div className="relative flex-1 sm:flex-initial bg-slate-900/90 border border-slate-800 rounded-lg px-2 py-1">
+          <svg
+            viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+            className={`${
+              compact ? 'w-full sm:w-[240px] h-[38px]' : 'w-full sm:w-[320px] h-[44px]'
+            } overflow-visible cursor-crosshair block`}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={() => setHoveredIdx(null)}
+            role="img"
+            aria-label={`24-hour seed to peer ratio sparkline for ${torrent.title}`}
+          >
+            <defs>
+              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                <stop
+                  offset="0%"
+                  stopColor={badge.strokeColor}
+                  stopOpacity="0.32"
+                />
+                <stop
+                  offset="100%"
+                  stopColor={badge.strokeColor}
+                  stopOpacity="0.0"
+                />
+              </linearGradient>
+            </defs>
+
+            {/* 1.0x Equilibrium Reference Line */}
+            {eqY !== null && (
+              <line
+                x1="4"
+                y1={eqY}
+                x2={svgWidth - 4}
+                y2={eqY}
+                stroke="#475569"
+                strokeDasharray="3 3"
+                strokeWidth="1"
+              />
+            )}
+
+            {/* Area Fill */}
+            {areaPoints && <polygon points={areaPoints} fill={`url(#${gradId})`} />}
+
+            {/* 24h Ratio Polyline */}
+            <polyline
+              fill="none"
+              stroke={badge.strokeColor}
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              points={linePoints}
+            />
+
+            {/* Hover Scrubber or Latest Endpoint Dot */}
+            {hoveredIdx !== null && coords[hoveredIdx] ? (
+              <>
+                <line
+                  x1={coords[hoveredIdx].x}
+                  y1={2}
+                  x2={coords[hoveredIdx].x}
+                  y2={svgHeight - 2}
+                  stroke="#94a3b8"
+                  strokeDasharray="2 2"
+                  strokeWidth="1"
+                />
+                <circle
+                  cx={coords[hoveredIdx].x}
+                  cy={coords[hoveredIdx].y}
+                  r="3.5"
+                  fill={badge.strokeColor}
+                  stroke="#0f172a"
+                  strokeWidth="1.5"
+                />
+              </>
+            ) : (
+              coords.length > 0 && (
+                <circle
+                  cx={coords[coords.length - 1].x}
+                  cy={coords[coords.length - 1].y}
+                  r="2.75"
+                  fill={badge.strokeColor}
+                />
+              )
+            )}
+          </svg>
+        </div>
+
+        <div className="px-2 py-1 rounded-md bg-slate-900 border border-slate-800 text-right font-mono tabular-nums shrink-0 min-w-[58px]">
+          <div className="text-[9px] uppercase text-slate-400 leading-none">
+            {hoveredIdx !== null ? activeSample.time.split(' ')[0] : 'Ratio'}
+          </div>
+          <div className={`text-xs font-bold mt-0.5 ${badge.textColor}`}>
+            {activeSample.ratio.toFixed(2)}x
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+

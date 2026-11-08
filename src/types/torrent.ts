@@ -16,7 +16,10 @@ export type IndexerProtocol =
   | 'html-magnet'
   | 'torznab-json'
   | 'rutracker-scraper'
-  | 'ruboard-scraper';
+  | 'ruboard-scraper'
+  | 'gnutella-network'
+  | 'edonkey-kad'
+  | 'frostwire-p2p';
 
 export interface IndexerAuth {
   mode: 'credentials' | 'cookie' | 'guest-mirror';
@@ -60,6 +63,20 @@ export interface IndexerSite {
   lastUpdated?: string;
 }
 
+export interface RssFeedSubscription {
+  id: string;
+  name: string;
+  feedUrl: string;
+  category: Exclude<TorrentCategory, 'All'>;
+  filterPattern: string;
+  refreshIntervalMinutes: number;
+  autoInjectSearch: boolean;
+  enabled: boolean;
+  lastChecked?: string;
+  matchedCount?: number;
+  status: 'active' | 'syncing' | 'error';
+}
+
 export interface TorrentFileEntry {
   name: string;
   originalName?: string;
@@ -96,6 +113,11 @@ export interface TorrentItem {
   codec?: string;
   files: TorrentFileEntry[];
   pageUrl?: string;
+  p2pNetwork?: 'BitTorrent' | 'Gnutella' | 'eDonkey2000' | 'FrostWire' | 'Hybrid';
+  ed2kUri?: string;
+  ed2kHash?: string;
+  urnSha1?: string;
+  networkNodes?: number;
 }
 
 export type DownloadTargetMode = 'web-client' | 'device-client';
