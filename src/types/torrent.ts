@@ -14,7 +14,29 @@ export type IndexerProtocol =
   | 'apibay-api'
   | 'rss-feed'
   | 'html-magnet'
-  | 'torznab-json';
+  | 'torznab-json'
+  | 'rutracker-scraper'
+  | 'ruboard-scraper';
+
+export interface IndexerAuth {
+  mode: 'credentials' | 'cookie' | 'guest-mirror';
+  username?: string;
+  password?: string;
+  cookie?: string; // e.g. bb_data for RuTracker, z_pass_hash for Ru-Board
+  sessionExpires?: string;
+  authenticated: boolean;
+  statusMessage?: string;
+}
+
+export interface ProwlarrSyncState {
+  lastSync: string;
+  autoUpdateIntervalHours: number;
+  status: 'synced' | 'updating' | 'error';
+  indexersAvailable: number;
+  upstreamBranch: string;
+  message?: string;
+  autoUpdateEnabled: boolean;
+}
 
 export interface IndexerSite {
   id: string;
@@ -29,6 +51,13 @@ export interface IndexerSite {
   lastStatus?: 'healthy' | 'relay-active' | 'unreachable' | 'untested';
   description: string;
   apiKey?: string;
+  auth?: IndexerAuth;
+  requiresAuth?: boolean;
+  prowlarrId?: string;
+  privacy?: 'public' | 'semi-private' | 'private';
+  language?: string;
+  version?: string;
+  lastUpdated?: string;
 }
 
 export interface TorrentFileEntry {
@@ -141,10 +170,23 @@ export interface TransferSession {
   swarmHealthHistory?: SwarmHealthSample[];
 }
 
+export interface CustomWssTrackerEntry {
+  url: string;
+  enabled: boolean;
+  addedAt?: string;
+  lastTested?: string;
+  status?: 'online' | 'offline' | 'untested';
+  latencyMs?: number;
+  label?: string;
+}
+
 export interface DeviceClientConfig {
   preferredApp: 'default-magnet' | 'qbittorrent' | 'transmission' | 'deluge' | 'aria2';
   autoAppendTrackers: boolean;
   customTrackers: string[];
+  customWssTrackers?: string[];
+  autoAppendWssTrackers?: boolean;
+  customWssTrackerEntries?: CustomWssTrackerEntry[];
   rpcEnabled: boolean;
   rpcEndpoint: string;
   rpcToken: string;

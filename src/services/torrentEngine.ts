@@ -344,6 +344,111 @@ export function stripMagnetProtocol(magnetOrHash: string): string {
 }
 
 /**
+ * Appends custom tracker URLs (WSS/UDP/HTTP) to a magnet URI, deduplicating any existing ones.
+ */
+export function appendTrackersToMagnetUri(
+  magnetUri: string,
+  extraTrackers: string[]
+): string {
+  if (!magnetUri || !extraTrackers || extraTrackers.length === 0) return magnetUri;
+
+  const existingLower = new Set<string>();
+  const regex = /[?&]tr=([^&]+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(magnetUri)) !== null) {
+    try {
+      const decoded = decodeURIComponent(match[1]).toLowerCase();
+      existingLower.add(decoded);
+    } catch {
+      // ignore
+    }
+  }
+
+  const toAppend: string[] = [];
+  for (const tr of extraTrackers) {
+    const trimmed = tr.trim();
+    if (!trimmed) continue;
+    if (!existingLower.has(trimmed.toLowerCase())) {
+      toAppend.push(trimmed);
+      existingLower.add(trimmed.toLowerCase());
+    }
+  }
+
+  if (toAppend.length === 0) return magnetUri;
+
+  const separator = magnetUri.includes('?') ? '&' : '?';
+  const queryPart = toAppend.map((t) => `tr=${encodeURIComponent(t)}`).join('&');
+  return `${magnetUri}${separator}${queryPart}`;
+}
+
+/**
+ * Tests live WebSocket handshake to a custom WSS tracker and returns latency in ms.
+ */
+export async function testWssTrackerHandshake(
+  trackerUrl: string,
+  timeoutMs: number = 4000
+): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+  const url = trackerUrl.trim();
+  if (!url.startsWith('wss://') && !url.startsWith('ws://')) {
+    return { ok: false, latencyMs: 0, error: 'URL must begin with wss:// or ws://' };
+  }
+
+  const startTime = performance.now();
+  return new Promise((resolve) => {
+    let ws: WebSocket | null = null;
+    let resolved = false;
+
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        ws?.close();
+      } catch {}
+      resolve({
+        ok: false,
+        latencyMs: Math.round(performance.now() - startTime),
+        error: 'Connection timed out',
+      });
+    }, timeoutMs);
+
+    try {
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        const elapsed = Math.round(performance.now() - startTime);
+        try {
+          ws?.close();
+        } catch {}
+        resolve({ ok: true, latencyMs: Math.max(1, elapsed) });
+      };
+
+      ws.onerror = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        const elapsed = Math.round(performance.now() - startTime);
+        resolve({
+          ok: false,
+          latencyMs: elapsed,
+          error: 'WebSocket handshake rejected or host unreachable',
+        });
+      };
+    } catch (err) {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve({
+        ok: false,
+        latencyMs: 0,
+        error: err instanceof Error ? err.message : 'Invalid WebSocket endpoint',
+      });
+    }
+  });
+}
+
+/**
  * Triggers native desktop/mobile torrent client via magnet: URI scheme or RPC bridge.
  * If disableMagnetProtocol is set, bypasses the OS magnet: protocol handler and copies the hash.
  */
@@ -352,14 +457,15 @@ export async function triggerDeviceClientDownload(
   config: DeviceClientConfig
 ): Promise<{ method: string; magnetUri: string; rpcDispatched: boolean }> {
   let finalMagnet = torrent.magnetUri;
-  if (config.autoAppendTrackers && config.customTrackers.length > 0) {
-    const extra = config.customTrackers
-      .filter((t) => !finalMagnet.includes(encodeURIComponent(t)))
-      .map((t) => `tr=${encodeURIComponent(t)}`)
-      .join('&');
-    if (extra) {
-      finalMagnet = `${finalMagnet}&${extra}`;
-    }
+  const customWss = config.customWssTrackers || [];
+  const customGeneral = config.customTrackers || [];
+  const allTrackers = Array.from(new Set([...customGeneral, ...customWss]));
+
+  if (
+    (config.autoAppendTrackers || (config.autoAppendWssTrackers ?? true)) &&
+    allTrackers.length > 0
+  ) {
+    finalMagnet = appendTrackersToMagnetUri(finalMagnet, allTrackers);
   }
 
   let rpcDispatched = false;

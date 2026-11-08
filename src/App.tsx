@@ -30,6 +30,7 @@ import {
   Activity,
   Terminal,
   FolderPlus,
+  Zap,
 } from 'lucide-react';
 import {
   CURATED_SWARM_TORRENTS,
@@ -50,6 +51,7 @@ import {
 } from './types/torrent';
 import {
   announceToWssTracker,
+  appendTrackersToMagnetUri,
   exportBatchTorrentMetadata,
   exportTorrentManifestFile,
   triggerDeviceClientDownload,
@@ -62,6 +64,7 @@ import { BatchRenameControl } from './components/BatchRenameControl';
 import { TorkDoctorModal } from './components/TorkDoctorModal';
 import { SourceCatalogModal } from './components/SourceCatalogModal';
 import { LinuxDistroHubModal } from './components/LinuxDistroHubModal';
+import { TrackerAuthModal } from './components/TrackerAuthModal';
 import {
   FileExtensionIcon,
   applyBatchRenameToFiles,
@@ -116,8 +119,11 @@ const SMART_TAG_RULES: SmartTagRule[] = [
   { label: '60fps', category: 'source', pattern: /\b60\s?fps\b/i },
   { label: 'FLAC', category: 'audio', pattern: /\bflac\b/i },
   { label: 'AAC 5.1', category: 'audio', pattern: /\baac\s?5\.1\b/i },
+  { label: 'DVO', category: 'audio', pattern: /\b(dvo|mvo|dub)\b/i },
+  { label: 'Rus/Eng', category: 'audio', pattern: /\b(rus\/eng|rus\+eng|multilingual)\b/i },
   { label: 'ISO', category: 'format', pattern: /\biso\b/i },
   { label: 'amd64', category: 'format', pattern: /\b(amd64|x86_64|x64)\b/i },
+  { label: 'Repack', category: 'format', pattern: /\b(repack|portable)\b/i },
 ];
 
 function extractSmartTags(item: TorrentItem): SmartTagInfo[] {
@@ -159,7 +165,12 @@ export default function App() {
       const saved = localStorage.getItem('kestrel_indexer_sites_v1');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Merge in any default indexers that aren't in the saved list yet (e.g. RuTracker, Ru-Board)
+          const existingIds = new Set(parsed.map((s: IndexerSite) => s.id));
+          const missingDefaults = DEFAULT_INDEXERS.filter((d) => !existingIds.has(d.id));
+          return [...parsed, ...missingDefaults];
+        }
       }
     } catch {
       // ignore storage error
@@ -178,10 +189,28 @@ export default function App() {
   // Download mode & device config state
   const [defaultMode, setDefaultMode] = useState<DownloadTargetMode>('web-client');
   const [deviceConfig, setDeviceConfig] = useState<DeviceClientConfig>(() => {
+    let customWss: string[] = ['wss://tracker.fastcast.nz', 'wss://spug.net:443/announce'];
+    try {
+      const savedWss = localStorage.getItem('kestrel_custom_wss_trackers_v1');
+      if (savedWss) {
+        const parsedWss = JSON.parse(savedWss);
+        if (Array.isArray(parsedWss)) {
+          customWss = parsedWss;
+        }
+      }
+    } catch {}
+
     try {
       const saved = localStorage.getItem('kestrel_device_config_v1');
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          customWssTrackers: Array.isArray(parsed.customWssTrackers)
+            ? parsed.customWssTrackers
+            : customWss,
+          autoAppendWssTrackers: parsed.autoAppendWssTrackers ?? true,
+        };
       }
     } catch {
       // ignore
@@ -190,6 +219,8 @@ export default function App() {
       preferredApp: 'default-magnet',
       autoAppendTrackers: true,
       customTrackers: DEFAULT_WSS_TRACKERS,
+      customWssTrackers: customWss,
+      autoAppendWssTrackers: true,
       rpcEnabled: false,
       rpcEndpoint: 'http://localhost:6800/jsonrpc',
       rpcToken: '',
@@ -201,6 +232,12 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem('kestrel_device_config_v1', JSON.stringify(deviceConfig));
+      if (deviceConfig.customWssTrackers) {
+        localStorage.setItem(
+          'kestrel_custom_wss_trackers_v1',
+          JSON.stringify(deviceConfig.customWssTrackers)
+        );
+      }
     } catch {
       // ignore
     }
@@ -374,6 +411,8 @@ export default function App() {
   const [isTorkDoctorOpen, setIsTorkDoctorOpen] = useState(false);
   const [isSourceCatalogOpen, setIsSourceCatalogOpen] = useState(false);
   const [isLinuxDistroHubOpen, setIsLinuxDistroHubOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalSite, setAuthModalSite] = useState<IndexerSite | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -765,10 +804,40 @@ export default function App() {
     }
   };
 
+  const [searchAsYouType, setSearchAsYouType] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('kestrel_search_as_you_type_v1');
+      if (saved !== null) return JSON.parse(saved);
+    } catch {}
+    return true;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'kestrel_search_as_you_type_v1',
+        JSON.stringify(searchAsYouType)
+      );
+    } catch {}
+  }, [searchAsYouType]);
+
   // Initial search load on mount
   useEffect(() => {
     executeMultiSiteSearch('');
   }, []);
+
+  // Debounced search-as-you-type across enabled indexers
+  useEffect(() => {
+    if (!searchAsYouType) return;
+    const trimmed = searchQuery.trim();
+    if (trimmed === submittedQuery.trim()) return;
+
+    const timer = window.setTimeout(() => {
+      executeMultiSiteSearch(trimmed);
+    }, 320);
+
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, searchAsYouType, sites]);
 
   const addRecentSearch = (query: string) => {
     const clean = query.trim();
@@ -777,6 +846,20 @@ export default function App() {
       const filtered = prev.filter((item) => item.toLowerCase() !== clean.toLowerCase());
       return [clean, ...filtered].slice(0, 5);
     });
+  };
+
+  const handleResetHomeAndFilters = () => {
+    setActiveTab('search');
+    setSearchQuery('');
+    setSubmittedQuery('');
+    setSelectedCategory('All');
+    setSelectedSiteFilter('all');
+    setSelectedSmartTags([]);
+    setSortBy('seeders');
+    setExpandedRowId(null);
+    setSelectedTorrentIds([]);
+    executeMultiSiteSearch('');
+    notify('Navigated Home: Reset all filters & cleared search query (H)');
   };
 
   const handleSelectRecentSearch = (query: string) => {
@@ -810,7 +893,7 @@ export default function App() {
     executeMultiSiteSearch(searchQuery);
   };
 
-  // Global keyboard shortcuts ('s' or '/' to focus search, 't' for Transfers, 'i' for Search Sites, 'c' for Client Settings, 'm' for Add Magnet, 'Escape' to clear search/close modals, '?' for shortcut help)
+  // Global keyboard shortcuts ('h' for Home/reset filters, 's' or '/' to focus search, 't' for Transfers, 'i' for Search Sites, 'c' for Client Settings, 'm' for Add Magnet, 'Escape' to clear search/close modals, '?' for shortcut help)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -874,7 +957,10 @@ export default function App() {
 
       const key = e.key.toLowerCase();
 
-      if (key === 's' || e.key === '/') {
+      if (key === 'h') {
+        e.preventDefault();
+        handleResetHomeAndFilters();
+      } else if (key === 's' || e.key === '/') {
         e.preventDefault();
         setActiveTab('search');
         window.requestAnimationFrame(() => {
@@ -930,6 +1016,9 @@ export default function App() {
     expandedRowId,
     sites,
     selectedSmartTags,
+    selectedCategory,
+    selectedSiteFilter,
+    sortBy,
   ]);
 
   // Base candidate torrents before Smart Tag filtering so we can compute live tag counts
@@ -1208,8 +1297,26 @@ export default function App() {
     torrent: TorrentItem,
     mode: DownloadTargetMode
   ) => {
+    // Collect custom WSS trackers and custom general trackers to automatically append
+    const customWss = (deviceConfig.customWssTrackers || []).filter((t) => t.trim());
+    const customGeneral = (deviceConfig.customTrackers || []).filter((t) => t.trim());
+    const allCustomToAppend = Array.from(new Set([...customGeneral, ...customWss]));
+
+    const shouldAppend =
+      deviceConfig.autoAppendTrackers || (deviceConfig.autoAppendWssTrackers ?? true);
+
+    const effectiveMagnetUri =
+      shouldAppend && allCustomToAppend.length > 0
+        ? appendTrackersToMagnetUri(torrent.magnetUri, allCustomToAppend)
+        : torrent.magnetUri;
+
+    const augmentedTorrent: TorrentItem = {
+      ...torrent,
+      magnetUri: effectiveMagnetUri,
+    };
+
     if (mode === 'device-client') {
-      const res = await triggerDeviceClientDownload(torrent, deviceConfig);
+      const res = await triggerDeviceClientDownload(augmentedTorrent, deviceConfig);
       notify(`Opened "${torrent.title.slice(0, 38)}..." in ${res.method}`);
 
       // Also log in transfer history as handed-off
@@ -1217,7 +1324,7 @@ export default function App() {
       if (!existing) {
         const handoffSession: TransferSession = {
           id: `session-${torrent.id}-${Date.now()}`,
-          torrent,
+          torrent: augmentedTorrent,
           mode: 'device-client',
           status: 'handed-off',
           progress: 100,
@@ -1233,7 +1340,10 @@ export default function App() {
           startedAt: new Date().toISOString(),
           files: torrent.files.map((f) => ({ ...f })),
           peers: [],
-          trackerStatus: DEFAULT_WSS_TRACKERS.slice(0, 4).map((url) => ({
+          trackerStatus: Array.from(new Set([
+            ...DEFAULT_WSS_TRACKERS.slice(0, 4),
+            ...customWss,
+          ])).map((url) => ({
             url,
             status: 'peers-found',
             peers: torrent.seeders,
@@ -1261,7 +1371,7 @@ export default function App() {
                   selected: s.files[idx]?.selected ?? f.selected,
                 })),
                 torrent: {
-                  ...s.torrent,
+                  ...augmentedTorrent,
                   files: torrent.files.map((f) => ({ ...f })),
                 },
               }
@@ -1274,9 +1384,14 @@ export default function App() {
     }
 
     const sessionId = `session-${torrent.id}-${Date.now()}`;
+    const wssTrackersToAnnounce = Array.from(new Set([
+      ...DEFAULT_WSS_TRACKERS.filter((t) => t.startsWith('wss://')).slice(0, 4),
+      ...customWss,
+    ]));
+
     const newSession: TransferSession = {
       id: sessionId,
-      torrent,
+      torrent: augmentedTorrent,
       mode: 'web-client',
       status: 'downloading',
       progress: 4.5,
@@ -1321,7 +1436,7 @@ export default function App() {
           progress: 76,
         },
       ],
-      trackerStatus: DEFAULT_WSS_TRACKERS.slice(0, 5).map((url) => ({
+      trackerStatus: wssTrackersToAnnounce.map((url) => ({
         url,
         status: 'announcing',
         peers: 0,
@@ -1347,8 +1462,8 @@ export default function App() {
     setActiveTab('transfers');
     notify(`Started WebTorrent download: ${torrent.title.slice(0, 42)}...`);
 
-    // Announce to real WSS trackers
-    DEFAULT_WSS_TRACKERS.slice(0, 3).forEach((trackerUrl) => {
+    // Announce to real WSS trackers including custom WSS trackers
+    wssTrackersToAnnounce.forEach((trackerUrl) => {
       announceToWssTracker(trackerUrl, torrent.infoHash, (status, peers) => {
         setTransfers((prev) =>
           prev.map((s) =>
@@ -1402,40 +1517,66 @@ export default function App() {
   const handleBatchQueueTransfers = async (mode: DownloadTargetMode) => {
     if (selectedTorrentItems.length === 0) return;
 
+    // Collect custom WSS and general trackers to append during download initiation
+    const customWss = (deviceConfig.customWssTrackers || []).filter((t) => t.trim());
+    const customGeneral = (deviceConfig.customTrackers || []).filter((t) => t.trim());
+    const allCustomToAppend = Array.from(new Set([...customGeneral, ...customWss]));
+
+    const shouldAppend =
+      deviceConfig.autoAppendTrackers || (deviceConfig.autoAppendWssTrackers ?? true);
+
+    const prepareTorrentWithTrackers = (torrent: TorrentItem): TorrentItem => {
+      const effectiveMagnet =
+        shouldAppend && allCustomToAppend.length > 0
+          ? appendTrackersToMagnetUri(torrent.magnetUri, allCustomToAppend)
+          : torrent.magnetUri;
+      return {
+        ...torrent,
+        magnetUri: effectiveMagnet,
+      };
+    };
+
     if (mode === 'device-client') {
-      for (const torrent of selectedTorrentItems) {
+      for (const rawTorrent of selectedTorrentItems) {
+        const torrent = prepareTorrentWithTrackers(rawTorrent);
         await triggerDeviceClientDownload(torrent, deviceConfig);
       }
 
       setTransfers((prev) => {
         const existingHashes = new Set(prev.map((t) => t.torrent.infoHash));
         const newHandoffs: TransferSession[] = selectedTorrentItems
-          .filter((torrent) => !existingHashes.has(torrent.infoHash))
-          .map((torrent, idx) => ({
-            id: `session-${torrent.id}-${Date.now()}-${idx}`,
-            torrent,
-            mode: 'device-client',
-            status: 'handed-off',
-            progress: 100,
-            downloadedBytes: torrent.sizeBytes,
-            uploadedBytes: 0,
-            downloadSpeedBytes: 0,
-            uploadSpeedBytes: 0,
-            etaSeconds: 0,
-            connectedPeers: torrent.seeders,
-            totalSwarmPeers: torrent.seeders + torrent.leechers,
-            piecesTotal: 64,
-            piecesCompleted: Array.from({ length: 64 }, () => 2),
-            startedAt: new Date().toISOString(),
-            files: torrent.files.map((f) => ({ ...f })),
-            peers: [],
-            trackerStatus: DEFAULT_WSS_TRACKERS.slice(0, 4).map((url) => ({
-              url,
-              status: 'peers-found',
-              peers: torrent.seeders,
-            })),
-            swarmHealthHistory: generateInitialSwarmHistory(torrent.seeders, torrent.leechers, 8),
-          }));
+          .filter((t) => !existingHashes.has(t.infoHash))
+          .map((rawTorrent, idx) => {
+            const torrent = prepareTorrentWithTrackers(rawTorrent);
+            return {
+              id: `session-${torrent.id}-${Date.now()}-${idx}`,
+              torrent,
+              mode: 'device-client',
+              status: 'handed-off',
+              progress: 100,
+              downloadedBytes: torrent.sizeBytes,
+              uploadedBytes: 0,
+              downloadSpeedBytes: 0,
+              uploadSpeedBytes: 0,
+              etaSeconds: 0,
+              connectedPeers: torrent.seeders,
+              totalSwarmPeers: torrent.seeders + torrent.leechers,
+              piecesTotal: 64,
+              piecesCompleted: Array.from({ length: 64 }, () => 2),
+              startedAt: new Date().toISOString(),
+              files: torrent.files.map((f) => ({ ...f })),
+              peers: [],
+              trackerStatus: Array.from(new Set([
+                ...DEFAULT_WSS_TRACKERS.slice(0, 4),
+                ...customWss,
+              ])).map((url) => ({
+                url,
+                status: 'peers-found',
+                peers: torrent.seeders,
+              })),
+              swarmHealthHistory: generateInitialSwarmHistory(torrent.seeders, torrent.leechers, 8),
+            };
+          });
         return [...newHandoffs, ...prev];
       });
 
@@ -1453,8 +1594,14 @@ export default function App() {
         .map((t) => t.torrent.infoHash)
     );
 
-    selectedTorrentItems.forEach((torrent, idx) => {
-      if (existingWebHashes.has(torrent.infoHash)) return;
+    const wssTrackersToAnnounce = Array.from(new Set([
+      ...DEFAULT_WSS_TRACKERS.filter((t) => t.startsWith('wss://')).slice(0, 4),
+      ...customWss,
+    ]));
+
+    selectedTorrentItems.forEach((rawTorrent, idx) => {
+      if (existingWebHashes.has(rawTorrent.infoHash)) return;
+      const torrent = prepareTorrentWithTrackers(rawTorrent);
       const sessionId = `session-${torrent.id}-${Date.now()}-${idx}`;
       const newSession: TransferSession = {
         id: sessionId,
@@ -1495,7 +1642,7 @@ export default function App() {
             progress: 100,
           },
         ],
-        trackerStatus: DEFAULT_WSS_TRACKERS.slice(0, 5).map((url) => ({
+        trackerStatus: wssTrackersToAnnounce.map((url) => ({
           url,
           status: 'announcing',
           peers: 0,
@@ -1517,7 +1664,7 @@ export default function App() {
       };
       createdSessions.push(newSession);
 
-      DEFAULT_WSS_TRACKERS.slice(0, 3).forEach((trackerUrl) => {
+      wssTrackersToAnnounce.forEach((trackerUrl) => {
         announceToWssTracker(trackerUrl, torrent.infoHash, (status, peers) => {
           setTransfers((prev) =>
             prev.map((s) =>
@@ -1627,8 +1774,9 @@ export default function App() {
           href="#search"
           onClick={(e) => {
             e.preventDefault();
-            setActiveTab('search');
+            handleResetHomeAndFilters();
           }}
+          title="Navigate Home & reset filters (Key: H)"
           className="text-lg font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0 font-display"
         >
           Kestrel
@@ -1734,42 +1882,66 @@ export default function App() {
                   </p>
                 </div>
 
-                {/* Default Download Engine Switcher (Functional Interactive Control) */}
-                <div className="flex items-center gap-2 self-start lg:self-auto shrink-0">
-                  <span className="text-xs text-slate-400 whitespace-nowrap shrink-0">
-                    Primary Client:
-                  </span>
-                  <div className="flex items-center gap-1 p-1 bg-slate-900 rounded-lg border border-slate-800">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDefaultMode('web-client');
-                        notify('Primary action set to In-Browser WebTorrent Client');
-                      }}
-                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                        defaultMode === 'web-client'
-                          ? 'bg-sky-500 text-slate-950 font-semibold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      <Globe className="w-3.5 h-3.5" />
-                      Web Client
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDefaultMode('device-client');
-                        notify('Primary action set to Device Client (Magnet Protocol)');
-                      }}
-                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                        defaultMode === 'device-client'
-                          ? 'bg-sky-500 text-slate-950 font-semibold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      <Monitor className="w-3.5 h-3.5" />
-                      Device Client
-                    </button>
+                {/* Default Download Engine Switcher & Live Search Toggle */}
+                <div className="flex flex-wrap items-center gap-3 self-start lg:self-auto shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !searchAsYouType;
+                      setSearchAsYouType(next);
+                      notify(
+                        next
+                          ? 'Search-as-you-type enabled (instant live indexer & local filtering)'
+                          : 'Search-as-you-type paused (press Enter to dispatch remote query)'
+                      );
+                    }}
+                    title="Toggle instant search-as-you-type across all enabled sites"
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors flex items-center gap-1.5 cursor-pointer ${
+                      searchAsYouType
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                    }`}
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>Live Search: {searchAsYouType ? 'ON' : 'OFF'}</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 whitespace-nowrap shrink-0">
+                      Primary Client:
+                    </span>
+                    <div className="flex items-center gap-1 p-1 bg-slate-900 rounded-lg border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDefaultMode('web-client');
+                          notify('Primary action set to In-Browser WebTorrent Client');
+                        }}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                          defaultMode === 'web-client'
+                            ? 'bg-sky-500 text-slate-950 font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Globe className="w-3.5 h-3.5" />
+                        Web Client
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDefaultMode('device-client');
+                          notify('Primary action set to Device Client (Magnet Protocol)');
+                        }}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                          defaultMode === 'device-client'
+                            ? 'bg-sky-500 text-slate-950 font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Monitor className="w-3.5 h-3.5" />
+                        Device Client
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1783,23 +1955,24 @@ export default function App() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search movies, Linux ISOs, audio, archives across all enabled sites (Press 'S' to focus, 'Esc' to clear)..."
-                    className="w-full pl-11 pr-24 py-3 text-sm bg-slate-950 border border-slate-700/90 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-sky-400"
+                    placeholder="Search as you type across movies, Linux ISOs, audio, repacks ('S' to focus, 'H' to reset all, 'Esc' to clear)..."
+                    className="w-full pl-11 pr-32 py-3 text-sm bg-slate-950 border border-slate-700/90 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-sky-400"
                   />
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
-                    {searchQuery ? (
+                    {isSearching && (
+                      <RefreshCw className="w-3.5 h-3.5 text-sky-400 animate-spin mr-1" />
+                    )}
+                    {searchQuery ||
+                    selectedCategory !== 'All' ||
+                    selectedSiteFilter !== 'all' ||
+                    selectedSmartTags.length > 0 ? (
                       <button
                         type="button"
-                        onClick={() => {
-                          setSearchQuery('');
-                          setSubmittedQuery('');
-                          executeMultiSiteSearch('');
-                          searchInputRef.current?.focus();
-                        }}
-                        title="Clear search (Escape)"
-                        className="px-2 py-0.5 text-[11px] font-mono text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded transition-colors"
+                        onClick={handleResetHomeAndFilters}
+                        title="Reset all filters & clear search query (Shortcut: H)"
+                        className="px-2 py-0.5 text-[11px] font-mono text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded transition-colors cursor-pointer"
                       >
-                        Esc
+                        Reset (H)
                       </button>
                     ) : (
                       <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-900 border border-slate-800 rounded pointer-events-none">
@@ -2550,12 +2723,36 @@ export default function App() {
                               </div>
                             </div>
 
-                            <div className="min-w-[44px] min-h-[44px] -mr-2 -mt-1 flex items-center justify-center text-slate-400 group-hover:text-sky-400 shrink-0">
-                              {isExpanded ? (
-                                <ChevronUp className="w-4 h-4" />
-                              ) : (
-                                <ChevronDown className="w-4 h-4" />
-                              )}
+                            <div className="relative group/expand min-w-[44px] min-h-[44px] -mr-2 -mt-1 flex items-center justify-center gap-1.5 text-slate-400 group-hover:text-sky-400 shrink-0">
+                              <span
+                                className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-800/80 text-slate-400 border border-slate-700/60 opacity-50 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity select-none pointer-events-none"
+                                title="Press Enter on keyboard to expand or collapse details"
+                                aria-hidden="true"
+                              >
+                                <kbd className="font-semibold text-slate-300">Enter</kbd>
+                              </span>
+                              <button
+                                type="button"
+                                tabIndex={-1}
+                                aria-label={
+                                  isExpanded
+                                    ? 'Collapse torrent details (Enter)'
+                                    : 'Expand torrent details (Enter)'
+                                }
+                                aria-keyshortcuts="Enter"
+                                title={
+                                  isExpanded
+                                    ? 'Collapse torrent details (Enter)'
+                                    : 'Expand torrent details (Enter)'
+                                }
+                                className="p-1 text-slate-500 group-hover:text-sky-400 hover:text-sky-300 transition-colors duration-150 rounded cursor-pointer"
+                              >
+                                {isExpanded ? (
+                                  <ChevronUp className="w-4 h-4" />
+                                ) : (
+                                  <ChevronDown className="w-4 h-4" />
+                                )}
+                              </button>
                             </div>
                           </div>
 
@@ -2900,19 +3097,54 @@ export default function App() {
                                 {/* Release Title & Zero-Pill Unboxed Metadata */}
                                 <td className="py-3.5 px-3">
                                   <div className="flex items-start gap-2.5">
-                                    <button
-                                      type="button"
-                                      tabIndex={-1}
-                                      aria-label="Toggle torrent details"
-                                      className="mt-1 text-slate-500 group-hover:text-sky-400 transition-colors duration-150 shrink-0"
-                                    >
-                                      {isExpanded ? (
-                                        <ChevronUp className="w-4 h-4" />
-                                      ) : (
-                                        <ChevronDown className="w-4 h-4" />
-                                      )}
-                                    </button>
-                                    <div className="min-w-0">
+                                    <div className="relative flex items-center gap-1.5 shrink-0 mt-0.5 group/expand">
+                                      <button
+                                        type="button"
+                                        tabIndex={-1}
+                                        aria-label={
+                                          isExpanded
+                                            ? 'Collapse torrent details (Enter)'
+                                            : 'Expand torrent details (Enter)'
+                                        }
+                                        aria-keyshortcuts="Enter"
+                                        title={
+                                          isExpanded
+                                            ? 'Collapse torrent details (Enter)'
+                                            : 'Expand torrent details (Enter)'
+                                        }
+                                        className="p-1 -m-1 text-slate-500 group-hover:text-sky-400 hover:text-sky-300 transition-colors duration-150 rounded cursor-pointer"
+                                      >
+                                        {isExpanded ? (
+                                          <ChevronUp className="w-4 h-4" />
+                                        ) : (
+                                          <ChevronDown className="w-4 h-4" />
+                                        )}
+                                      </button>
+
+                                      {/* Subtle keyboard shortcut help text next to Expand/Collapse button */}
+                                      <span
+                                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-800/80 text-slate-400 border border-slate-700/60 opacity-50 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150 select-none pointer-events-none"
+                                        title="Press Enter on keyboard to expand or collapse details"
+                                        aria-hidden="true"
+                                      >
+                                        <kbd className="font-semibold text-slate-300">Enter</kbd>
+                                      </span>
+
+                                      {/* Floating tooltip on hover/focus for accessibility */}
+                                      <div
+                                        role="tooltip"
+                                        className="absolute left-0 bottom-full mb-1.5 hidden group-hover/expand:flex items-center gap-1.5 px-2 py-1 bg-slate-950 text-slate-200 text-[11px] font-sans rounded-md border border-slate-700/80 shadow-xl whitespace-nowrap z-30 pointer-events-none"
+                                      >
+                                        <span>
+                                          {isExpanded ? 'Collapse row details' : 'Expand row details'}
+                                        </span>
+                                        <kbd className="px-1 py-0.2 bg-slate-800 border border-slate-700 rounded text-[10px] font-mono text-sky-300 font-semibold">
+                                          Enter
+                                        </kbd>
+                                      </div>
+                                    </div>
+
+                                    <div className="min-w-0 flex-1">
                                       <div className="font-medium text-slate-100 group-hover:text-sky-300 transition-colors duration-150 leading-snug">
                                         {item.title}
                                       </div>
@@ -3482,6 +3714,10 @@ export default function App() {
               onNotify={notify}
               onOpenSourceCatalog={() => setIsSourceCatalogOpen(true)}
               onOpenTorkDoctor={() => setIsTorkDoctorOpen(true)}
+              onConfigureAuth={(site) => {
+                setAuthModalSite(site);
+                setIsAuthModalOpen(true);
+              }}
             />
           </div>
         )}
@@ -3654,6 +3890,7 @@ export default function App() {
 
             <div className="mt-4 divide-y divide-slate-800/80 text-xs">
               {[
+                { keys: ['H'], label: 'Navigate Home, reset all filters & clear search query' },
                 { keys: ['S', '/'], label: 'Focus torrent search bar' },
                 { keys: ['↑', '↓'], label: 'Navigate rows when torrent table is focused' },
                 { keys: ['Enter'], label: 'Expand or collapse focused torrent row' },
@@ -3841,6 +4078,19 @@ export default function App() {
         isOpen={isLinuxDistroHubOpen}
         onClose={() => setIsLinuxDistroHubOpen(false)}
         onStartDownload={handleStartTransfer}
+        onNotify={notify}
+      />
+
+      {/* RuTracker & Ru-Board Authentication & Cookie Manager Modal */}
+      <TrackerAuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        site={authModalSite}
+        onSaveAuth={(siteId, auth) => {
+          setSites((prev) =>
+            prev.map((s) => (s.id === siteId ? { ...s, auth } : s))
+          );
+        }}
         onNotify={notify}
       />
 

@@ -9,6 +9,9 @@ import {
   Sliders,
   Activity,
   FolderPlus,
+  Key,
+  ShieldCheck,
+  Wifi,
 } from 'lucide-react';
 import {
   IndexerProtocol,
@@ -31,6 +34,7 @@ interface IndexerManagerViewProps {
   onNotify: (msg: string) => void;
   onOpenSourceCatalog?: () => void;
   onOpenTorkDoctor?: () => void;
+  onConfigureAuth?: (site: IndexerSite) => void;
 }
 
 const ALL_CATEGORIES: Exclude<TorrentCategory, 'All'>[] = [
@@ -53,6 +57,7 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
   onNotify,
   onOpenSourceCatalog,
   onOpenTorkDoctor,
+  onConfigureAuth,
 }) => {
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -284,6 +289,8 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
                 <option value="rss-feed">RSS / Atom XML Magnet Feed</option>
                 <option value="torznab-json">Torznab / Jackett / JSON API</option>
                 <option value="archive-api">Archive.org BitTorrent API</option>
+                <option value="rutracker-scraper">RuTracker HTML & bb_data Session Scraper</option>
+                <option value="ruboard-scraper">Ru-Board Forum Topic & Repack Scraper</option>
               </select>
             </div>
 
@@ -431,11 +438,14 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenSourceCatalog}
-                title="Browse community indexer source catalog (Key: a)"
+                title="Browse Prowlarr Indexers Catalog (26+ indexers, auto-syncing) (Key: a)"
                 className="px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 border border-slate-700 hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
                 <FolderPlus className="w-3.5 h-3.5 text-sky-400" />
-                <span>Catalog</span>
+                <span>Prowlarr Catalog</span>
+                <span className="px-1.5 py-0.2 text-[10px] font-bold rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                  26
+                </span>
                 <kbd className="text-[10px] font-mono px-1 py-0.2 bg-slate-900 border border-slate-700 rounded text-slate-400">
                   a
                 </kbd>
@@ -468,6 +478,20 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
+
+                  {(site.requiresAuth || site.id.includes('rutracker') || site.id.includes('ruboard')) && (
+                    site.auth?.authenticated ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                        <span>bb_data Active</span>
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 flex items-center gap-1">
+                        <Wifi className="w-3 h-3 text-sky-400" />
+                        <span>Public Mirror (No Login)</span>
+                      </span>
+                    )
+                  )}
                 </div>
 
                 <p className="text-xs text-slate-400 mt-1">
@@ -504,6 +528,18 @@ export const IndexerManagerView: React.FC<IndexerManagerViewProps> = ({
 
               {/* Controls */}
               <div className="flex items-center gap-2 shrink-0">
+                {(site.requiresAuth || site.id.includes('rutracker') || site.id.includes('ruboard')) && onConfigureAuth && (
+                  <button
+                    type="button"
+                    onClick={() => onConfigureAuth(site)}
+                    title="Configure RuTracker / Ru-Board login, bb_data session cookie, or public mirror"
+                    className="px-2.5 py-1.5 text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 rounded-lg transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Key className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Auth / Cookie</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => handleProbeExistingSite(site)}
                   disabled={probingSiteId === site.id}
