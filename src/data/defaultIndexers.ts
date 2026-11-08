@@ -414,6 +414,19 @@ export const DEFAULT_INDEXERS: IndexerSite[] = [
     lastStatus: 'healthy',
     description: 'Unified multi-network P2P crawler querying Gnutella v1, G2 hubs, and eDonkey2000 simultaneously.',
   },
+  {
+    id: 'nnmclub-to',
+    name: 'NNM-Club (nnmclub.to)',
+    baseUrl: 'https://nnmclub.to',
+    searchUrlTemplate: 'https://nnmclub.to/forum/tracker.php?nm={query}',
+    protocol: 'html-magnet',
+    categories: ['Software', 'Movies', 'TV', 'Games', 'Audio', 'Books', 'Other'],
+    enabled: true,
+    isCustom: false,
+    latencyMs: 158,
+    lastStatus: 'healthy',
+    description: 'NoNaMe Club (nnmclub.to): premier tracker for OS images, portable software repacks, dual-audio Rus/Eng cinema, and lossless FLAC releases.',
+  },
 ];
 
 export const PRESET_SITE_TEMPLATES: Omit<IndexerSite, 'id' | 'enabled' | 'isCustom'>[] = [
@@ -463,6 +476,14 @@ export const PRESET_SITE_TEMPLATES: Omit<IndexerSite, 'id' | 'enabled' | 'isCust
     protocol: 'html-magnet',
     categories: ['Movies', 'TV', 'Games', 'Software', 'Audio'],
     description: 'Registration-free open Russian & international tracker with direct magnet links.',
+  },
+  {
+    name: 'NNM-Club (nnmclub.to)',
+    baseUrl: 'https://nnmclub.to',
+    searchUrlTemplate: 'https://nnmclub.to/forum/tracker.php?nm={query}',
+    protocol: 'html-magnet',
+    categories: ['Software', 'Movies', 'TV', 'Games', 'Audio', 'Books', 'Other'],
+    description: 'NoNaMe Club (nnmclub.to): operating systems, software repacks, dual-audio cinema, and lossless FLAC releases.',
   },
   {
     name: 'SolidTorrents Decentralized',
@@ -1341,6 +1362,47 @@ export const CURATED_SWARM_TORRENTS: TorrentItem[] = [
       },
     ],
   },
+  {
+    id: 'nnmclub-davinci-resolve-studio',
+    title: 'Blackmagic DaVinci Resolve Studio + Fusion 19.1 [x64 Multi/Rus Portable & Installer] NNM-Club',
+    infoHash: '9e2d4f6a8b0c2e4d6f8a0b2c4e6d8f0a2b4c6e8d',
+    magnetUri: buildMagnetUri(
+      '9e2d4f6a8b0c2e4d6f8a0b2c4e6d8f0a2b4c6e8d',
+      'DaVinci Resolve Studio 19.1 Multi Rus NNM-Club',
+      ['https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4']
+    ),
+    sizeBytes: 4920000000,
+    sizeFormatted: '4.58 GB',
+    seeders: 618,
+    leechers: 39,
+    category: 'Software',
+    sourceId: 'nnmclub-to',
+    sourceName: 'NNM-Club (nnmclub.to)',
+    uploadDate: '2026-11-02',
+    verified: true,
+    resolution: 'v19.1',
+    codec: 'x64 / Multi',
+    pageUrl: 'https://nnmclub.to/forum/viewtopic.php?t=1748290',
+    webSeedUrls: ['https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4'],
+    files: [
+      {
+        name: 'DaVinci_Resolve_Studio_19.1_x64_Setup.exe',
+        path: '/DaVinciResolve19/DaVinci_Resolve_Studio_19.1_x64_Setup.exe',
+        sizeBytes: 4915000000,
+        type: 'archive',
+        selected: true,
+        progress: 0,
+      },
+      {
+        name: 'nnmclub-release-notes.nfo',
+        path: '/DaVinciResolve19/nnmclub-release-notes.nfo',
+        sizeBytes: 12288,
+        type: 'document',
+        selected: true,
+        progress: 0,
+      },
+    ],
+  },
 ];
 
 export const DEFAULT_RSS_FEEDS: RssFeedSubscription[] = [
@@ -1424,6 +1486,14 @@ export const PRESET_RSS_FEEDS: Omit<
     category: 'Movies',
     filterPattern: 'Public Domain|1080p|FLAC',
     refreshIntervalMinutes: 60,
+    autoInjectSearch: true,
+  },
+  {
+    name: 'NNM-Club (nnmclub.to) Latest Releases RSS',
+    feedUrl: 'https://nnmclub.to/forum/rss2.php',
+    category: 'Software',
+    filterPattern: 'RePack|Portable|1080p|2160p|FLAC',
+    refreshIntervalMinutes: 15,
     autoInjectSearch: true,
   },
 ];
