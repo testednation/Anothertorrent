@@ -82,10 +82,16 @@ import {
   summarizeFileCategories,
 } from './components/FileExtensionIcon';
 import {
+  calculateSeederLeecherRatio,
   calculateSwarmRatio,
   generateInitialSwarmHistory,
   getSwarmViability,
+  isLowSeederStallRisk,
 } from './services/swarmHealth';
+import {
+  getAutocompleteSuggestions,
+  splitSuggestionHighlight,
+} from './services/searchAutocomplete';
 
 type ActiveNavTab = 'search' | 'transfers' | 'indexers' | 'settings';
 type SortField = 'seeders' | 'sizeBytes' | 'uploadDate';
@@ -413,6 +419,14 @@ export default function App() {
         count,
       }));
   }, [searchFrequencies]);
+
+  // Real-time autocomplete suggestions computed from searchFrequencies as the user types
+  const [isAutocompleteOpen, setIsAutocompleteOpen] = useState(false);
+  const [activeAutocompleteIndex, setActiveAutocompleteIndex] = useState<number>(-1);
+  const autocompleteSuggestions = useMemo(
+    () => getAutocompleteSuggestions(searchQuery, searchFrequencies, 6),
+    [searchQuery, searchFrequencies]
+  );
 
   const [selectedCategory, setSelectedCategory] = useState<TorrentCategory>('All');
   const [selectedSiteFilter, setSelectedSiteFilter] = useState<string>('all');
@@ -880,12 +894,16 @@ export default function App() {
     setIsSearching(true);
     setSubmittedQuery(queryText);
     try {
+      const sitesToUse =
+        activeSites && activeSites.some((s) => s.enabled)
+          ? activeSites
+          : DEFAULT_INDEXERS;
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: queryText,
-          sites: activeSites,
+          sites: sitesToUse,
         }),
       });
       if (response.ok) {
@@ -1043,7 +1061,7 @@ export default function App() {
     }, 320);
 
     return () => window.clearTimeout(timer);
-  }, [searchQuery, searchAsYouType, sites]);
+  }, [searchQuery, searchAsYouType, sites, submittedQuery]);
 
   const addRecentSearch = (query: string) => {
     const clean = query.trim();
@@ -1091,9 +1109,24 @@ export default function App() {
   const handleSelectPopularSearch = (term: string) => {
     setSearchQuery(term);
     setSubmittedQuery(term);
+    setIsAutocompleteOpen(false);
+    setActiveAutocompleteIndex(-1);
     recordSearchTerm(term);
     executeMultiSiteSearch(term);
     notify(`Searching popular query: "${term}"`);
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+  };
+
+  const handleSelectAutocompleteSuggestion = (term: string) => {
+    setSearchQuery(term);
+    setSubmittedQuery(term);
+    setIsAutocompleteOpen(false);
+    setActiveAutocompleteIndex(-1);
+    recordSearchTerm(term);
+    executeMultiSiteSearch(term);
+    notify(`Autocompleted popular query: "${term}"`);
     window.requestAnimationFrame(() => {
       searchInputRef.current?.focus();
     });
@@ -1283,56 +1316,79 @@ export default function App() {
 
   // Base candidate torrents before Smart Tag filtering so we can compute live tag counts
   const baseCandidateTorrents = useMemo(() => {
-    const enabledSiteIds = new Set(
+    const rawEnabledSiteIds = new Set(
       sites.filter((s) => s.enabled).map((s) => s.id)
     );
+    // If no sites are enabled, fallback so default indexers are allowed
+    const enabledSiteIds =
+      rawEnabledSiteIds.size > 0
+        ? rawEnabledSiteIds
+        : new Set(DEFAULT_INDEXERS.map((s) => s.id));
+
     const deletedSet = new Set(deletedTorrentIds);
     const q = searchQuery.trim().toLowerCase();
+    const queryTokens = q.split(/\s+/).filter(Boolean);
 
+    // Curated torrents from local high-speed swarm
     const matchingCurated = CURATED_SWARM_TORRENTS.filter((item) => {
       if (deletedSet.has(item.id)) return false;
-      if (!enabledSiteIds.has(item.sourceId)) return false;
+      if (rawEnabledSiteIds.size > 0 && !enabledSiteIds.has(item.sourceId)) return false;
       if (!q) return true;
+      const titleLower = item.title.toLowerCase();
+      const catLower = item.category.toLowerCase();
+      const srcLower = item.sourceName.toLowerCase();
       return (
-        item.title.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
-        item.sourceName.toLowerCase().includes(q)
+        titleLower.includes(q) ||
+        catLower.includes(q) ||
+        srcLower.includes(q) ||
+        queryTokens.some((tok) => titleLower.includes(tok) || catLower.includes(tok))
       );
     });
 
     const combinedMap = new Map<string, TorrentItem>();
-    for (const item of [...matchingCurated, ...remoteResults]) {
+
+    // 1. Add curated matches
+    for (const item of matchingCurated) {
+      if (selectedCategory !== 'All' && item.category !== selectedCategory) continue;
+      if (selectedSiteFilter !== 'all' && item.sourceId !== selectedSiteFilter) continue;
+      combinedMap.set(item.id, item);
+    }
+
+    // 2. Add remote results fetched from indexer search
+    for (const item of remoteResults) {
       if (deletedSet.has(item.id)) continue;
-      if (!enabledSiteIds.has(item.sourceId)) continue;
-      if (
-        selectedCategory !== 'All' &&
-        item.category !== selectedCategory
-      ) {
-        continue;
+      if (rawEnabledSiteIds.size > 0 && !enabledSiteIds.has(item.sourceId)) continue;
+      if (selectedCategory !== 'All' && item.category !== selectedCategory) continue;
+      if (selectedSiteFilter !== 'all' && item.sourceId !== selectedSiteFilter) continue;
+
+      // When the search was submitted for this query, accept all backend results directly
+      // When user is typing a new query, retain remote results or gently filter by query tokens
+      if (q && submittedQuery.trim().toLowerCase() !== q) {
+        const titleLower = item.title.toLowerCase();
+        const srcLower = item.sourceName.toLowerCase();
+        const matchesAnyToken =
+          queryTokens.length === 0 ||
+          queryTokens.some((tok) => titleLower.includes(tok) || srcLower.includes(tok));
+        if (!matchesAnyToken && matchingCurated.length > 0) {
+          continue;
+        }
       }
-      if (
-        selectedSiteFilter !== 'all' &&
-        item.sourceId !== selectedSiteFilter
-      ) {
-        continue;
-      }
-      if (
-        q &&
-        !item.title.toLowerCase().includes(q) &&
-        !item.sourceName.toLowerCase().includes(q) &&
-        submittedQuery.toLowerCase() !== q
-      ) {
-        continue;
-      }
+
+      combinedMap.set(item.id, item);
+    }
+
+    // Apply batch rename configurations if present
+    const resultList: TorrentItem[] = [];
+    for (const item of combinedMap.values()) {
       const renameCfg = batchRenameConfigs[item.id];
       const renamedFiles = applyBatchRenameToFiles(item.files, renameCfg);
-      combinedMap.set(item.id, {
+      resultList.push({
         ...item,
         files: renamedFiles,
       });
     }
 
-    return Array.from(combinedMap.values());
+    return resultList;
   }, [
     sites,
     remoteResults,
@@ -2309,15 +2365,71 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Search Input Bar */}
+              {/* Search Input Bar with Popular Query Autocomplete */}
               <form onSubmit={handleSearchSubmit} className="flex flex-col sm:flex-row gap-3">
                 <div className="relative flex-1">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none z-10" />
                   <input
                     ref={searchInputRef}
                     type="text"
+                    role="combobox"
+                    aria-expanded={isAutocompleteOpen && autocompleteSuggestions.length > 0}
+                    aria-autocomplete="list"
+                    aria-controls="kestrel-search-autocomplete-listbox"
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => {
+                      if (searchQuery.trim().length > 0) {
+                        setIsAutocompleteOpen(true);
+                      }
+                    }}
+                    onBlur={() => {
+                      window.setTimeout(() => {
+                        setIsAutocompleteOpen(false);
+                        setActiveAutocompleteIndex(-1);
+                      }, 150);
+                    }}
+                    onChange={(e) => {
+                      const nextVal = e.target.value;
+                      setSearchQuery(nextVal);
+                      setIsAutocompleteOpen(nextVal.trim().length > 0);
+                      setActiveAutocompleteIndex(-1);
+                    }}
+                    onKeyDown={(e) => {
+                      if (!isAutocompleteOpen || autocompleteSuggestions.length === 0) {
+                        return;
+                      }
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setActiveAutocompleteIndex((prev) =>
+                          prev < autocompleteSuggestions.length - 1 ? prev + 1 : 0
+                        );
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setActiveAutocompleteIndex((prev) =>
+                          prev > 0 ? prev - 1 : autocompleteSuggestions.length - 1
+                        );
+                      } else if (e.key === 'Tab') {
+                        const chosen =
+                          activeAutocompleteIndex >= 0
+                            ? autocompleteSuggestions[activeAutocompleteIndex]
+                            : autocompleteSuggestions[0];
+                        if (chosen) {
+                          e.preventDefault();
+                          handleSelectAutocompleteSuggestion(chosen.term);
+                        }
+                      } else if (e.key === 'Enter' && activeAutocompleteIndex >= 0) {
+                        const chosen = autocompleteSuggestions[activeAutocompleteIndex];
+                        if (chosen) {
+                          e.preventDefault();
+                          handleSelectAutocompleteSuggestion(chosen.term);
+                        }
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsAutocompleteOpen(false);
+                        setActiveAutocompleteIndex(-1);
+                      }
+                    }}
                     placeholder="Search as you type across movies, Linux ISOs, audio, repacks ('S' to focus, 'H' to reset all, 'Esc' to clear)..."
                     className="w-full pl-11 pr-32 py-3 text-sm bg-slate-950 border border-slate-700/90 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-sky-400"
                   />
@@ -2343,6 +2455,86 @@ export default function App() {
                       </kbd>
                     )}
                   </div>
+
+                  {/* Autocomplete Suggestions Dropdown (powered by searchFrequencies) */}
+                  {isAutocompleteOpen && autocompleteSuggestions.length > 0 && (
+                    <div
+                      id="kestrel-search-autocomplete-listbox"
+                      role="listbox"
+                      aria-label="Popular search query suggestions"
+                      className="absolute left-0 right-0 top-full mt-1.5 bg-slate-950/95 backdrop-blur-md border border-slate-700/90 rounded-xl shadow-2xl overflow-hidden z-40"
+                    >
+                      <div className="px-3.5 py-2 border-b border-slate-800/80 bg-slate-900/60 flex items-center justify-between text-[11px] text-slate-400">
+                        <span className="flex items-center gap-1.5 font-medium text-slate-300">
+                          <Flame className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Popular Query Suggestions</span>
+                        </span>
+                        <span className="font-mono text-[10px] text-slate-400">
+                          <kbd className="px-1 py-0.2 bg-slate-900 border border-slate-700 rounded text-slate-300">
+                            ↑↓
+                          </kbd>{' '}
+                          navigate ·{' '}
+                          <kbd className="px-1 py-0.2 bg-slate-900 border border-slate-700 rounded text-slate-300">
+                            Tab
+                          </kbd>{' '}
+                          / <kbd className="px-1 py-0.2 bg-slate-900 border border-slate-700 rounded text-slate-300">Enter</kbd> select
+                        </span>
+                      </div>
+                      <div className="divide-y divide-slate-800/60">
+                        {autocompleteSuggestions.map((suggestion, idx) => {
+                          const isHighlighted = idx === activeAutocompleteIndex;
+                          const { before, matched, after } =
+                            splitSuggestionHighlight(suggestion);
+                          return (
+                            <button
+                              key={suggestion.term}
+                              type="button"
+                              role="option"
+                              aria-selected={isHighlighted}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleSelectAutocompleteSuggestion(suggestion.term);
+                              }}
+                              onMouseEnter={() => setActiveAutocompleteIndex(idx)}
+                              className={`w-full px-3.5 py-2.5 text-left flex items-center justify-between gap-3 transition-colors cursor-pointer ${
+                                isHighlighted
+                                  ? 'bg-sky-500/20 text-slate-100'
+                                  : 'hover:bg-slate-900/80 text-slate-200'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <Search
+                                  className={`w-3.5 h-3.5 shrink-0 ${
+                                    isHighlighted ? 'text-sky-400' : 'text-slate-500'
+                                  }`}
+                                />
+                                <span className="text-xs sm:text-sm truncate">
+                                  {before}
+                                  <span className="font-semibold text-sky-400 underline decoration-sky-400/50 underline-offset-2">
+                                    {matched}
+                                  </span>
+                                  {after}
+                                </span>
+                                {suggestion.matchType === 'prefix' && (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                                    Prefix Match
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0 font-mono text-[11px] tabular-nums">
+                                <span className="text-amber-400/90 font-semibold">
+                                  #{suggestion.rank}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                                  {suggestion.count}× searched
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <button
                   type="submit"
@@ -3038,15 +3230,25 @@ export default function App() {
                 </div>
               </div>
 
-              {filteredTorrents.length === 0 ? (
+              {isSearching ? (
+                <div className="p-16 text-center">
+                  <div className="w-10 h-10 rounded-full border-2 border-sky-500/20 border-t-sky-400 animate-spin mx-auto mb-3" />
+                  <h3 className="text-base font-semibold text-slate-200">
+                    Querying Swarm Indexers...
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                    Searching {sites.filter((s) => s.enabled).length || DEFAULT_INDEXERS.length} enabled indexers & DHT relay for &ldquo;{searchQuery || 'top releases'}&rdquo;...
+                  </p>
+                </div>
+              ) : filteredTorrents.length === 0 ? (
                 <div className="p-12 text-center">
                   <h3 className="text-base font-semibold text-slate-200">
                     No Matching Torrents Found
                   </h3>
                   <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                    Try clearing category filters, searching a broader release title, or adding more torrent index sites.
+                    Try clearing category or tag filters, searching a broader release keyword, or enabling more torrent index sites.
                   </p>
-                  <div className="mt-4 flex items-center justify-center gap-3">
+                  <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
                     <button
                       onClick={() => {
                         setSearchQuery('');
@@ -3058,8 +3260,36 @@ export default function App() {
                       }}
                       className="px-4 py-2 text-xs font-medium bg-slate-800 text-slate-200 rounded-lg hover:bg-slate-700 transition-colors"
                     >
-                      Reset Filters
+                      Reset All Filters & Search
                     </button>
+                    {selectedCategory !== 'All' && (
+                      <button
+                        onClick={() => setSelectedCategory('All')}
+                        className="px-4 py-2 text-xs font-medium bg-slate-800/90 text-sky-400 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors"
+                      >
+                        Search Across All Categories
+                      </button>
+                    )}
+                    {selectedSmartTags.length > 0 && (
+                      <button
+                        onClick={() => setSelectedSmartTags([])}
+                        className="px-4 py-2 text-xs font-medium bg-slate-800/90 text-amber-300 border border-slate-700 rounded-lg hover:bg-slate-700 transition-colors"
+                      >
+                        Clear Smart Tags ({selectedSmartTags.length})
+                      </button>
+                    )}
+                    {sites.every((s) => !s.enabled) && (
+                      <button
+                        onClick={() => {
+                          setSites((prev) => prev.map((s) => ({ ...s, enabled: true })));
+                          executeMultiSiteSearch(searchQuery, sites.map((s) => ({ ...s, enabled: true })));
+                          notify('Re-enabled all default indexer sites');
+                        }}
+                        className="px-4 py-2 text-xs font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-lg hover:bg-emerald-500/30 transition-colors"
+                      >
+                        Enable All Indexers
+                      </button>
+                    )}
                     <button
                       onClick={() => setActiveTab('indexers')}
                       className="px-4 py-2 text-xs font-semibold bg-sky-500 text-slate-950 rounded-lg hover:bg-sky-400 transition-colors"
@@ -3218,9 +3448,19 @@ export default function App() {
                                 <span aria-hidden="true">·</span>
                                 <span className="text-slate-200">{item.sizeFormatted}</span>
                                 <span aria-hidden="true">·</span>
-                                <span className="text-emerald-400">
-                                  {item.seeders.toLocaleString()} S
-                                </span>
+                                {isLowSeederStallRisk(item.seeders, item.leechers) ? (
+                                  <span
+                                    title={`Stall Risk: Low seed-to-peer ratio (${calculateSeederLeecherRatio(item.seeders, item.leechers)}x: ${item.seeders} seeds / ${item.leechers} leechers)`}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-sans font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                                  >
+                                    <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
+                                    <span>{item.seeders.toLocaleString()} S (Stall Risk)</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-emerald-400">
+                                    {item.seeders.toLocaleString()} S
+                                  </span>
+                                )}
                                 <span aria-hidden="true">·</span>
                                 <span>{item.leechers.toLocaleString()} P</span>
                               </div>
@@ -3564,7 +3804,10 @@ export default function App() {
                           <th className="py-3 px-3 font-medium text-right whitespace-nowrap">
                             Size
                           </th>
-                          <th className="py-3 px-3 font-medium text-right whitespace-nowrap">
+                          <th
+                            className="py-3 px-3 font-medium text-right whitespace-nowrap"
+                            title="Active seeders in swarm. Warns on Stall Risk when seeder-to-leecher ratio is below 0.05x"
+                          >
                             Seeds
                           </th>
                           <th className="py-3 px-3 font-medium text-right whitespace-nowrap">
@@ -3790,8 +4033,52 @@ export default function App() {
                                 </td>
 
                                 {/* Seeders */}
-                                <td className="py-3.5 px-3 text-right font-mono tabular-nums text-xs text-emerald-400 font-medium whitespace-nowrap">
-                                  {item.seeders.toLocaleString()}
+                                <td className="py-3.5 px-3 text-right font-mono tabular-nums text-xs whitespace-nowrap">
+                                  {(() => {
+                                    const isStallRisk = isLowSeederStallRisk(item.seeders, item.leechers);
+                                    const seedLeechRatio = calculateSeederLeecherRatio(item.seeders, item.leechers);
+
+                                    if (!isStallRisk) {
+                                      return (
+                                        <span className="text-emerald-400 font-medium">
+                                          {item.seeders.toLocaleString()}
+                                        </span>
+                                      );
+                                    }
+
+                                    return (
+                                      <div className="inline-flex items-center justify-end gap-1.5 relative group/stall">
+                                        <span
+                                          tabIndex={0}
+                                          aria-label={`Stall Risk: Low seed-to-peer ratio (${seedLeechRatio < 0.001 ? '0.00' : seedLeechRatio.toFixed(3)}x)`}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-sans font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 cursor-help"
+                                        >
+                                          <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0 animate-pulse" />
+                                          <span>Stall Risk</span>
+                                        </span>
+                                        <span className="text-rose-400 font-semibold">
+                                          {item.seeders.toLocaleString()}
+                                        </span>
+
+                                        {/* Floating Tooltip */}
+                                        <div
+                                          role="tooltip"
+                                          className="absolute right-0 bottom-full mb-1.5 hidden group-hover/stall:flex group-focus-within/stall:flex flex-col gap-1 px-2.5 py-1.5 bg-slate-950 text-slate-200 text-[11px] font-sans rounded-lg border border-rose-500/40 shadow-xl whitespace-nowrap z-30 pointer-events-none text-left"
+                                        >
+                                          <div className="flex items-center gap-1.5 font-semibold text-rose-300">
+                                            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                            <span>Stall Risk: Low Seed-to-Leecher Ratio</span>
+                                          </div>
+                                          <div className="text-slate-300 text-[10px] font-mono">
+                                            Ratio: <span className="text-rose-300 font-semibold">{seedLeechRatio < 0.001 ? '0.00' : seedLeechRatio.toFixed(3)}x</span> ({item.seeders} seeds / {item.leechers} leechers)
+                                          </div>
+                                          <div className="text-slate-400 text-[10px]">
+                                            Ratio &lt; 0.05. Torrent may be dead or progress will stall.
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
                                 </td>
 
                                 {/* Leechers */}

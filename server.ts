@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import crypto from 'crypto';
+import { DEFAULT_INDEXERS } from './src/data/defaultIndexers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -873,13 +874,21 @@ async function searchGenericOrCustomSite(
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const portArgIdx = process.argv.indexOf('--port');
+  const portFromArg =
+    portArgIdx !== -1 && process.argv[portArgIdx + 1]
+      ? parseInt(process.argv[portArgIdx + 1], 10)
+      : undefined;
+  const PORT = portFromArg || (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
 
   app.use(express.json({ limit: '1mb' }));
 
   app.post('/api/search', async (req, res) => {
     const { query = '', sites = [] } = req.body || {};
-    const enabledSites = Array.isArray(sites) ? sites.filter((s) => s && s.enabled) : [];
+    let enabledSites = Array.isArray(sites) ? sites.filter((s) => s && s.enabled) : [];
+    if (enabledSites.length === 0) {
+      enabledSites = DEFAULT_INDEXERS.filter((s) => s.enabled);
+    }
 
     const siteStatuses: {
       siteId: string;
@@ -1323,9 +1332,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Kestrel Torrent Index & Web Client server running on http://localhost:${PORT}`);
   });
+
+  const handleShutdown = () => {
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', handleShutdown);
+  process.on('SIGINT', handleShutdown);
 }
 
 startServer();

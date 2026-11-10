@@ -1,9 +1,22 @@
 import { SwarmHealthSample, SwarmViabilityLevel } from '../types/torrent';
 
 export const SWARM_STALL_THRESHOLD = 0.1; // 0.1x seed-to-peer ratio threshold
+export const LOW_SEED_STALL_RATIO_THRESHOLD = 0.05; // 0.05x seeder-to-leecher stall risk threshold
 
 export function isSwarmStallRisk(ratio: number): boolean {
   return ratio < SWARM_STALL_THRESHOLD;
+}
+
+export function isLowSeederStallRisk(seeds: number, leechers: number): boolean {
+  if (seeds <= 0) return true;
+  if (leechers <= 0) return false;
+  return seeds / leechers < LOW_SEED_STALL_RATIO_THRESHOLD;
+}
+
+export function calculateSeederLeecherRatio(seeds: number, leechers: number): number {
+  if (seeds <= 0) return 0;
+  if (leechers <= 0) return 999;
+  return Number((seeds / leechers).toFixed(3));
 }
 
 export function calculateSwarmRatio(seeds: number, peers: number): number {

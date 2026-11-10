@@ -1403,6 +1403,42 @@ export const CURATED_SWARM_TORRENTS: TorrentItem[] = [
       },
     ],
   },
+  {
+    id: 'archive-vintage-pdp11-unix',
+    title: 'Research Unix Seventh Edition (Version 7 Unix, 1979) PDP-11 Tape Dump [Archival Swarm]',
+    infoHash: '1a3b5c7d9e0f2a4b6c8d0e1f3a5b7c9d0e2f4a6b',
+    magnetUri: buildMagnetUri(
+      '1a3b5c7d9e0f2a4b6c8d0e1f3a5b7c9d0e2f4a6b',
+      'Unix Version 7 PDP11 Tape Image'
+    ),
+    sizeBytes: 10485760,
+    sizeFormatted: '10.00 MB',
+    seeders: 2,
+    leechers: 74,
+    category: 'Software',
+    sourceId: 'archive-bt',
+    sourceName: 'Internet Archive BitTorrent',
+    uploadDate: '2026-09-14',
+    verified: false,
+    files: [
+      {
+        name: 'v7_pdp11.tap',
+        path: '/v7/v7_pdp11.tap',
+        sizeBytes: 10480000,
+        type: 'archive',
+        selected: true,
+        progress: 0,
+      },
+      {
+        name: 'tape-catalog.txt',
+        path: '/v7/tape-catalog.txt',
+        sizeBytes: 5760,
+        type: 'document',
+        selected: true,
+        progress: 0,
+      },
+    ],
+  },
 ];
 
 export const DEFAULT_RSS_FEEDS: RssFeedSubscription[] = [
